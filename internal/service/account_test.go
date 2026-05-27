@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -91,6 +92,57 @@ func TestFetchRemoteInfoBootstrapsBeforeAccountRefresh(t *testing.T) {
 	}
 }
 
+func TestDetectAccountTypeUsesAuthPlanType(t *testing.T) {
+	accounts := newTestAccountService(t)
+	token := accessTokenWithPayload(t, map[string]any{
+		"https://api.openai.com/auth": map[string]any{
+			"plan_type": "plus",
+		},
+	})
+
+	got := accounts.detectAccountType(token, nil, nil)
+	if got != "Plus" {
+		t.Fatalf("detectAccountType() = %q, want Plus", got)
+	}
+}
+
+func TestAddAccountRecordsUsesImportedPlanType(t *testing.T) {
+	accounts := newTestAccountService(t)
+
+	result := accounts.AddAccountRecords([]map[string]any{{
+		"access_token":      "token-1",
+		"chatgpt_plan_type": "plus",
+	}})
+
+	if result["added"] != 1 {
+		t.Fatalf("added = %#v, want 1", result["added"])
+	}
+	account := accounts.GetAccount("token-1")
+	if account["type"] != "Plus" {
+		t.Fatalf("account type = %#v, want Plus", account["type"])
+	}
+}
+
+func TestDetectAccountTypePreservesExistingImportedType(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccountRecords([]map[string]any{{"access_token": "token-1", "plan_type": "plus"}})
+
+	got := accounts.detectAccountType("token-1", map[string]any{"email": "user@example.com"}, map[string]any{})
+	if got != "Plus" {
+		t.Fatalf("detectAccountType() = %q, want Plus", got)
+	}
+}
+
+func TestDetectAccountTypeKeepsImportedPaidTypeWhenGenericSearchFindsFree(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccountRecords([]map[string]any{{"access_token": "token-1", "plan_type": "plus"}})
+
+	got := accounts.detectAccountType("token-1", map[string]any{"plan_type": "free"}, map[string]any{})
+	if got != "Plus" {
+		t.Fatalf("detectAccountType() = %q, want Plus", got)
+	}
+}
+
 func TestNormalizeAccountPreservesChatGPTAccountID(t *testing.T) {
 	normalized := normalizeAccount(map[string]any{
 		"access_token":       "token-1",
@@ -103,6 +155,15 @@ func TestNormalizeAccountPreservesChatGPTAccountID(t *testing.T) {
 	if public[0]["chatgpt_account_id"] != "acct-123" {
 		t.Fatalf("public chatgpt_account_id = %#v, want acct-123", public[0]["chatgpt_account_id"])
 	}
+}
+
+func accessTokenWithPayload(t *testing.T, payload map[string]any) string {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal token payload: %v", err)
+	}
+	return "header." + base64.RawURLEncoding.EncodeToString(data) + ".signature"
 }
 
 func TestFetchRemoteInfoSummarizesForbiddenChallenge(t *testing.T) {

@@ -1168,11 +1168,21 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/accounts" && r.Method == http.MethodPost:
 		body, _ := readJSONMap(r)
 		tokens := util.AsStringSlice(body["tokens"])
-		if len(tokens) == 0 {
+		records := util.AsMapSlice(body["accounts"])
+		if len(tokens) == 0 && len(records) == 0 {
 			util.WriteError(w, http.StatusBadRequest, "tokens is required")
 			return
 		}
 		result := a.accounts.AddAccounts(tokens)
+		if len(records) > 0 {
+			result = a.accounts.AddAccountRecords(records)
+			tokens = make([]string, 0, len(records))
+			for _, record := range records {
+				if token := util.Clean(firstNonEmpty(util.Clean(record["access_token"]), util.Clean(record["accessToken"]))); token != "" {
+					tokens = append(tokens, token)
+				}
+			}
+		}
 		refresh := a.accounts.RefreshAccounts(r.Context(), tokens)
 		for key, value := range refresh {
 			if key == "refreshed" || key == "errors" || key == "items" {

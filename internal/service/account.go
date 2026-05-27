@@ -173,7 +173,15 @@ func (s *AccountService) listRefreshableLimitedTokens(now time.Time) []string {
 }
 
 func (s *AccountService) AddAccounts(tokens []string) map[string]any {
-	cleaned := cleanTokens(tokens)
+	records := make([]map[string]any, 0, len(tokens))
+	for _, token := range tokens {
+		records = append(records, map[string]any{"access_token": token})
+	}
+	return s.AddAccountRecords(records)
+}
+
+func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]any {
+	cleaned := cleanAccountRecords(records)
 	if len(cleaned) == 0 {
 		return map[string]any{"added": 0, "skipped": 0, "items": s.ListAccounts()}
 	}
@@ -189,7 +197,8 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 		order = append(order, token)
 	}
 	added, skipped := 0, 0
-	for _, token := range cleaned {
+	for _, record := range cleaned {
+		token := util.Clean(record["access_token"])
 		current, ok := indexed[token]
 		if ok {
 			skipped++
@@ -198,7 +207,18 @@ func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 			current = map[string]any{}
 			order = append(order, token)
 		}
-		normalized := normalizeAccount(mergeMaps(current, map[string]any{"access_token": token, "type": util.ValueOr(current["type"], "Free")}))
+		updates := map[string]any{"access_token": token, "type": util.ValueOr(current["type"], "Free")}
+		if accountType := importedAccountType(record); accountType != "" {
+			updates["type"] = accountType
+		}
+		// Generate persistent fingerprint for accounts that don't have one yet.
+		// Once set, fp is NEVER overwritten — oai-device-id stays fixed for life.
+		if current["fp"] == nil {
+			if fp := prepareAccountFP(record); fp != nil {
+				updates["fp"] = fp
+			}
+		}
+		normalized := normalizeAccount(mergeMaps(current, updates))
 		if normalized != nil {
 			indexed[token] = normalized
 		}
@@ -1426,11 +1446,24 @@ func (s *AccountService) detectAccountType(accessToken string, mePayload, initPa
 		if matched := normalizeAccountType(authPayload["chatgpt_plan_type"]); matched != "" {
 			return matched
 		}
+		if matched := normalizeAccountType(authPayload["plan_type"]); matched != "" {
+			return matched
+		}
+	}
+	currentType := ""
+	if current := s.GetAccount(accessToken); current != nil {
+		currentType = normalizeAccountType(current["type"])
 	}
 	for _, payload := range []any{mePayload, initPayload, tokenPayload} {
 		if matched := searchAccountType(payload); matched != "" {
+			if matched == "Free" && isPaidAccountType(currentType) {
+				return currentType
+			}
 			return matched
 		}
+	}
+	if currentType != "" {
+		return currentType
 	}
 	return "Free"
 }
@@ -1639,6 +1672,104 @@ func cleanTokens(tokens []string) []string {
 	return out
 }
 
+// prepareAccountFP generates or preserves a persistent fingerprint for an account.
+//
+// Priority order:
+//  1. record has internal fp → return as-is (ensure oai-device-id exists)
+//  2. record has external fingerprint (CPA JSON format) → map to internal fp
+//  3. nothing → auto-generate default Chrome 145 Windows fingerprint
+//
+// oai-device-id and oai-session-id are generated once and NEVER change,
+// making each account appear as a stable, long-lived device to upstream.
+func prepareAccountFP(record map[string]any) map[string]any {
+	// Case 1: Internal fp already present — preserve and ensure required IDs exist
+	if fp, ok := record["fp"].(map[string]any); ok {
+		result := util.CopyMap(fp)
+		if util.Clean(result["oai-device-id"]) == "" {
+			result["oai-device-id"] = util.NewUUID()
+		}
+		if util.Clean(result["oai-session-id"]) == "" {
+			result["oai-session-id"] = util.NewUUID()
+		}
+		return result
+	}
+
+	fp := map[string]any{
+		"oai-device-id":  util.NewUUID(),
+		"oai-session-id": util.NewUUID(),
+	}
+
+	// Case 2: External CPA fingerprint format (fingerprint.browser.*)
+	if raw, ok := record["fingerprint"].(map[string]any); ok {
+		if browser, ok := raw["browser"].(map[string]any); ok {
+			mapped := map[string]string{
+				"user-agent":         "ua",
+				"sec-ch-ua":          "sec_ch_ua",
+				"sec-ch-ua-platform": "sec_ch_ua_platform",
+				"sec-ch-ua-mobile":   "sec_ch_ua_mobile",
+			}
+			for fpKey, recordKey := range mapped {
+				if v := util.Clean(browser[recordKey]); v != "" {
+					fp[fpKey] = v
+				}
+			}
+			// Derive impersonate profile from Chrome major version
+			if major := util.Clean(browser["chrome_major"]); major != "" {
+				fp["impersonate"] = "chrome" + major
+			}
+			if util.Clean(fp["impersonate"]) == "" {
+				fp["impersonate"] = detectImpersonateFromUA(util.Clean(fp["user-agent"]))
+			}
+		}
+		return fp
+	}
+
+	// Case 3: No fingerprint at all — auto-generate default
+	fp["impersonate"] = "chrome145"
+	fp["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+	fp["sec-ch-ua"] = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
+	fp["sec-ch-ua-mobile"] = "?0"
+	fp["sec-ch-ua-platform"] = `"Windows"`
+	return fp
+}
+
+// detectImpersonateFromUA extracts the impersonation profile string from a User-Agent.
+// Returns "chrome{MAJOR}" for Chrome-based UAs, default "chrome145" otherwise.
+func detectImpersonateFromUA(ua string) string {
+	prefix := "Chrome/"
+	if idx := strings.Index(ua, prefix); idx >= 0 {
+		rest := ua[idx+len(prefix):]
+		if end := strings.IndexAny(rest, ". "); end > 0 {
+			if major := rest[:end]; major != "" {
+				return "chrome" + major
+			}
+		}
+	}
+	return "chrome145"
+}
+
+func cleanAccountRecords(records []map[string]any) []map[string]any {
+	seen := map[string]struct{}{}
+	out := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		token := util.Clean(record["access_token"])
+		if token == "" {
+			token = util.Clean(record["accessToken"])
+		}
+		if token == "" {
+			continue
+		}
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
+		next := util.CopyMap(record)
+		next["access_token"] = token
+		out = append(out, next)
+	}
+	return out
+}
+
 func decodeAccessTokenPayload(accessToken string) map[string]any {
 	parts := strings.Split(util.Clean(accessToken), ".")
 	if len(parts) < 2 {
@@ -1691,6 +1822,31 @@ func normalizeAccountType(value any) string {
 		return "Pro"
 	default:
 		return ""
+	}
+}
+
+func importedAccountType(record map[string]any) string {
+	for _, key := range []string{"type", "chatgpt_plan_type", "plan_type"} {
+		if matched := normalizeAccountType(record[key]); matched != "" {
+			return matched
+		}
+	}
+	if authPayload := util.StringMap(record["https://api.openai.com/auth"]); authPayload != nil {
+		for _, key := range []string{"chatgpt_plan_type", "plan_type"} {
+			if matched := normalizeAccountType(authPayload[key]); matched != "" {
+				return matched
+			}
+		}
+	}
+	return ""
+}
+
+func isPaidAccountType(value string) bool {
+	switch normalizeAccountType(value) {
+	case "Plus", "ProLite", "Pro", "Team":
+		return true
+	default:
+		return false
 	}
 }
 

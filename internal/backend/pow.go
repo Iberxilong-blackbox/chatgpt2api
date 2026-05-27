@@ -94,7 +94,7 @@ func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string) 
 	return []any{
 		randomChoiceInt([]int{3000, 4000, 5000}),
 		now,
-		4294705152,
+		int64(4294705152),
 		0,
 		userAgent,
 		randomChoice(scriptSources),

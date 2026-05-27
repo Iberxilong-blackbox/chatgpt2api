@@ -163,6 +163,17 @@ export type Account = {
   lastUsedAt: string | null;
 };
 
+export type AccountImport = {
+  access_token: string;
+  type?: AccountType;
+  plan_type?: string;
+  chatgpt_plan_type?: string;
+  /** External CPA fingerprint object (fingerprint.browser.* format).
+   *  When present, the backend maps it to the internal fp structure
+   *  for persistent device-id, UA, and impersonation profile. */
+  fingerprint?: unknown;
+};
+
 type AccountListResponse = {
   items: Account[];
 };
@@ -808,6 +819,13 @@ export async function createAccounts(tokens: string[]) {
   return httpRequest<AccountMutationResponse>("/api/accounts", {
     method: "POST",
     body: { tokens },
+  });
+}
+
+export async function createAccountImports(accounts: AccountImport[]) {
+  return httpRequest<AccountMutationResponse>("/api/accounts", {
+    method: "POST",
+    body: { accounts },
   });
 }
 

@@ -3,6 +3,8 @@ package backend
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -177,6 +179,28 @@ func (c *Client) StreamConversation(ctx context.Context, messages []map[string]a
 	return out, errCh
 }
 
+// deterministicUUID generates a deterministic UUID v4 from an access token and namespace.
+// The same (accessToken, namespace) pair always produces the same UUID.
+// This serves as a stable fallback when fp is not stored in the account record.
+func deterministicUUID(accessToken, namespace string) string {
+	h := sha256.Sum256([]byte(namespace + ":" + accessToken))
+	// Set UUID v4 bits
+	h[6] = (h[6] & 0x0f) | 0x40
+	h[8] = (h[8] & 0x3f) | 0x80
+	// Format as 8-4-4-4-12
+	buf := make([]byte, 36)
+	hex.Encode(buf, h[:4])
+	buf[8] = '-'
+	hex.Encode(buf[9:13], h[4:6])
+	buf[13] = '-'
+	hex.Encode(buf[14:18], h[6:8])
+	buf[18] = '-'
+	hex.Encode(buf[19:23], h[8:10])
+	buf[23] = '-'
+	hex.Encode(buf[24:], h[10:16])
+	return string(buf)
+}
+
 func (c *Client) buildFingerprint() map[string]string {
 	account := map[string]any{}
 	if c.AccessToken != "" && c.lookup != nil {
@@ -198,8 +222,8 @@ func (c *Client) buildFingerprint() map[string]string {
 	defaults := map[string]string{
 		"user-agent":         browserUserAgent,
 		"impersonate":        browserImpersonationProfile,
-		"oai-device-id":      util.NewUUID(),
-		"oai-session-id":     util.NewUUID(),
+		"oai-device-id":      deterministicUUID(c.AccessToken, "device"),
+		"oai-session-id":     deterministicUUID(c.AccessToken, "session"),
 		"sec-ch-ua-mobile":   browserSecCHUAMobile,
 		"sec-ch-ua-platform": browserSecCHUAPlatform,
 	}

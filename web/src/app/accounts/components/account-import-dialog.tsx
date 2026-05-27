@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
-import { createAccountFromSession, createAccounts, type Account } from "@/lib/api";
+import { createAccountFromSession, createAccountImports, createAccounts, type Account, type AccountImport } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type ImportMethod = "menu" | "token" | "session" | "cpa";
@@ -39,7 +39,7 @@ type AccountImportDialogProps = {
 };
 
 type PendingCpaImport = {
-  tokens: string[];
+  accounts: AccountImport[];
   parsedFileCount: number;
   errorCount: number;
 };
@@ -64,8 +64,24 @@ function getSessionToken(value: unknown) {
 }
 
 function getCpaAccessToken(value: unknown) {
-  const token = (value as { access_token?: unknown })?.access_token;
+  const item = value as { access_token?: unknown; accessToken?: unknown };
+  const token = item.access_token ?? item.accessToken;
   return typeof token === "string" ? token.trim() : "";
+}
+
+function getCpaPlanType(value: unknown) {
+  const item = value as {
+    type?: unknown;
+    plan_type?: unknown;
+    chatgpt_plan_type?: unknown;
+    "https://api.openai.com/auth"?: {
+      plan_type?: unknown;
+      chatgpt_plan_type?: unknown;
+    };
+  };
+  const auth = item["https://api.openai.com/auth"];
+  const planType = item.chatgpt_plan_type ?? item.plan_type ?? item.type ?? auth?.chatgpt_plan_type ?? auth?.plan_type;
+  return typeof planType === "string" ? planType.trim() : "";
 }
 
 function readFileAsText(file: File) {
@@ -148,6 +164,41 @@ export function AccountImportDialog({ disabled, canImportTokens, canImportSessio
     setIsSubmitting(true);
     try {
       const data = await createAccounts(normalizedTokens);
+      onImported(data.items);
+      setOpen(false);
+      resetState();
+
+      if ((data.errors?.length ?? 0) > 0) {
+        const firstError = data.errors?.[0]?.error;
+        toast.error(
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，已刷新 ${data.refreshed ?? 0} 个，失败 ${data.errors?.length ?? 0} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+        );
+      } else {
+        toast.success(
+          `${successText ?? "导入完成"}，新增 ${data.added ?? 0} 个，跳过 ${data.skipped ?? 0} 个重复项，已自动刷新账号信息`,
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "导入账户失败";
+      toast.error(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const submitAccountImports = async (accounts: AccountImport[], successText?: string) => {
+    const normalizedAccounts = accounts
+      .map((item) => ({ ...item, access_token: item.access_token.trim() }))
+      .filter((item) => item.access_token);
+
+    if (normalizedAccounts.length === 0) {
+      toast.error("请先提供至少一个可用 Token");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const data = await createAccountImports(normalizedAccounts);
       onImported(data.items);
       setOpen(false);
       resetState();
@@ -259,13 +310,24 @@ export function AccountImportDialog({ disabled, canImportTokens, canImportSessio
           const raw = await readFileAsText(file);
           const parsed = JSON.parse(raw) as unknown;
           const token = getCpaAccessToken(parsed);
+          const planType = getCpaPlanType(parsed);
+          const account: AccountImport | null = token
+            ? {
+                access_token: token,
+                plan_type: planType || undefined,
+                chatgpt_plan_type: planType || undefined,
+                fingerprint: (parsed as Record<string, unknown>).fingerprint,
+              }
+            : null;
           return {
             token,
+            account,
           };
         }),
       );
 
       const tokens = results.map((item) => item.token).filter((item): item is string => Boolean(item));
+      const accounts = results.map((item) => item.account).filter((item): item is AccountImport => Boolean(item));
       const parsedFileCount = tokens.length;
       const errorCount = results.length - parsedFileCount;
 
@@ -275,7 +337,7 @@ export function AccountImportDialog({ disabled, canImportTokens, canImportSessio
       }
 
       setPendingCpaImport({
-        tokens,
+        accounts,
         parsedFileCount,
         errorCount,
       });
@@ -589,7 +651,7 @@ export function AccountImportDialog({ disabled, canImportTokens, canImportSessio
             </Button>
             <Button
               className="h-10 rounded-xl bg-stone-950 px-5 text-white hover:bg-stone-800"
-              onClick={() => void submitTokens(pendingCpaImport?.tokens ?? [], "CPA JSON 导入完成")}
+              onClick={() => void submitAccountImports(pendingCpaImport?.accounts ?? [], "CPA JSON 导入完成")}
               disabled={isSubmitting || !pendingCpaImport}
             >
               {isSubmitting ? <LoaderCircle className="size-4 animate-spin" /> : null}
