@@ -8,7 +8,8 @@ chatgpt2api.exe
 venv/
 .venv/
 __pycache__/
-docs/*
+*.go.[0-9]*
+
 !docs/image-generation-api.md
 !docs/user-quota-allocation-requirements.md
 !jshook/docs/

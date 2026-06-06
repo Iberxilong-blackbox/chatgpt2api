@@ -178,7 +178,7 @@ func (c *Client) streamOfficialResponsesImage(ctx context.Context, request Respo
 	if prompt == "" {
 		return fmt.Errorf("prompt is required")
 	}
-	if err := c.bootstrap(ctx); err != nil {
+	if err := c.Bootstrap(ctx); err != nil {
 		return err
 	}
 	reqs, err := c.getChatRequirements(ctx)

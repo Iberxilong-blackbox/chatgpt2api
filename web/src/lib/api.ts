@@ -161,6 +161,10 @@ export type Account = {
   success: number;
   fail: number;
   lastUsedAt: string | null;
+  warmingStatus?: string | null;
+  warmingDay?: number;
+  warmingErrors?: number;
+  warmingLastActionAt?: string | null;
 };
 
 export type AccountImport = {
@@ -856,6 +860,8 @@ export async function updateAccount(
     type?: AccountType;
     status?: AccountStatus;
     quota?: number;
+    warming_status?: string | null;
+    warming_day?: number;
   },
 ) {
   return httpRequest<AccountUpdateResponse>("/api/accounts/update", {

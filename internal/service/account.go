@@ -49,6 +49,7 @@ type AccountService struct {
 	textRequestCount  map[string]int
 	textCooldownUntil time.Time
 	refresher         *SessionRefresher
+	warmingWorker     WarmingRunner
 }
 
 const (
@@ -160,6 +161,9 @@ func (s *AccountService) listRefreshableLimitedTokens(now time.Time) []string {
 	var out []string
 	for _, item := range s.items {
 		if item["status"] != "限流" {
+			continue
+		}
+		if isWarmingAccount(item) {
 			continue
 		}
 		if restoreAt, ok := parseAccountRestoreAt(item["restore_at"]); ok && restoreAt.After(now) {
@@ -580,6 +584,9 @@ func (s *AccountService) filterNonFreeLocked() []map[string]any {
 		if status == "禁用" || status == "异常" || status == "刷新中" || status == "过期待刷新" {
 			continue
 		}
+		if isWarmingAccount(item) {
+			continue
+		}
 		if IsPaidImageAccount(item) {
 			out = append(out, item)
 		}
@@ -592,6 +599,9 @@ func (s *AccountService) filterFreeLocked() []map[string]any {
 	for _, item := range s.items {
 		status := util.Clean(item["status"])
 		if status == "禁用" || status == "异常" || status == "刷新中" || status == "过期待刷新" {
+			continue
+		}
+		if isWarmingAccount(item) {
 			continue
 		}
 		if !IsPaidImageAccount(item) {
@@ -1257,6 +1267,9 @@ func (s *AccountService) reserveNextCandidateToken(excluded map[string]struct{},
 		if allow != nil && !allow(item) {
 			continue
 		}
+		if isWarmingAccount(item) {
+			continue
+		}
 		if s.availableImageSlotsLocked(item) > 0 {
 			tokens = append(tokens, token)
 		}
@@ -1489,8 +1502,44 @@ func isPaidRefreshAccount(s *AccountService, accessToken string) bool {
 	return IsPaidImageAccount(account)
 }
 
+func isWarmingAccount(account map[string]any) bool {
+	return util.Clean(account["warming_status"]) == "warming"
+}
+
+// SetWarmingRunner injects the warming engine. Must be called once before
+// StartWarming/StopWarming are used.
+func (s *AccountService) SetWarmingRunner(runner WarmingRunner) {
+	s.warmingWorker = runner
+}
+
+// StartWarming begins a warming cycle. It is a no-op if warming is already
+// running or if InitWarming has not been called.
+func (s *AccountService) StartWarming() {
+	if s.warmingWorker != nil {
+		s.warmingWorker.Start()
+	}
+}
+
+// StopWarming cancels the current warming cycle.
+func (s *AccountService) StopWarming() {
+	if s.warmingWorker != nil {
+		s.warmingWorker.Stop()
+	}
+}
+
+// WarmingStatus returns the current warming worker state.
+func (s *AccountService) WarmingStatus() WarmingStatus {
+	if s.warmingWorker == nil {
+		return WarmingStatus{}
+	}
+	return s.warmingWorker.Status()
+}
+
 func IsImageAccountAvailable(account map[string]any) bool {
 	if account == nil {
+		return false
+	}
+	if isWarmingAccount(account) {
 		return false
 	}
 	status := util.Clean(account["status"])
@@ -1608,6 +1657,13 @@ func normalizeAccount(item map[string]any) map[string]any {
 	}
 	normalized["success"] = util.ToInt(normalized["success"], 0)
 	normalized["fail"] = util.ToInt(normalized["fail"], 0)
+	normalized["warming_day"] = util.ToInt(normalized["warming_day"], 0)
+	if warming := util.Clean(normalized["warming_status"]); warming == "warming" || warming == "done" {
+		normalized["warming_status"] = warming
+	} else {
+		normalized["warming_status"] = nil
+	}
+	normalized["warming_errors"] = util.ToInt(normalized["warming_errors"], 0)
 	return normalized
 }
 
@@ -1635,6 +1691,10 @@ func publicAccounts(accounts []map[string]any) []map[string]any {
 			"success":            util.ToInt(account["success"], 0),
 			"fail":               util.ToInt(account["fail"], 0),
 			"lastUsedAt":         account["last_used_at"],
+			"warmingStatus":      util.ValueOr(account["warming_status"], nil),
+			"warmingDay":         util.ToInt(account["warming_day"], 0),
+			"warmingErrors":      util.ToInt(account["warming_errors"], 0),
+			"warmingLastActionAt": account["warming_last_action_at"],
 		})
 	}
 	return out

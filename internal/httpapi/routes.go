@@ -1246,9 +1246,15 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updates := map[string]any{}
-		for _, key := range []string{"type", "status", "quota"} {
+		for _, key := range []string{"type", "status", "quota", "warming_status", "warming_day"} {
 			if value, ok := body[key]; ok && value != nil {
 				updates[key] = value
+			}
+		}
+		if warming, ok := updates["warming_status"]; ok {
+			if ws := util.Clean(warming); ws != "" && ws != "warming" && ws != "done" {
+				util.WriteError(w, http.StatusBadRequest, "warming_status must be empty, 'warming', or 'done'")
+				return
 			}
 		}
 		if len(updates) == 0 {
@@ -1263,6 +1269,14 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		result := map[string]any{"item": item, "items": a.accounts.ListAccounts()}
 		a.redactAccountPayloadForIdentity(identity, result)
 		util.WriteJSON(w, http.StatusOK, result)
+	case r.URL.Path == "/api/accounts/warming/start" && r.Method == http.MethodPost:
+		a.accounts.StartWarming()
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})
+	case r.URL.Path == "/api/accounts/warming/stop" && r.Method == http.MethodPost:
+		a.accounts.StopWarming()
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})
+	case r.URL.Path == "/api/accounts/warming/status" && r.Method == http.MethodGet:
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})
 	default:
 		http.NotFound(w, r)
 	}

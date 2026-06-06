@@ -82,7 +82,7 @@ func NewClient(accessToken string, lookup AccountLookup, proxy *service.ProxySer
 }
 
 func (c *Client) ListModels(ctx context.Context) (map[string]any, error) {
-	if err := c.bootstrap(ctx); err != nil {
+	if err := c.Bootstrap(ctx); err != nil {
 		return nil, err
 	}
 	path := "/backend-anon/models?iim=false&is_gizmo=false"
@@ -140,7 +140,7 @@ func (c *Client) StreamConversation(ctx context.Context, messages []map[string]a
 		if len(messages) == 0 {
 			messages = []map[string]any{{"role": "user", "content": prompt}}
 		}
-		if err := c.bootstrap(ctx); err != nil {
+		if err := c.Bootstrap(ctx); err != nil {
 			errCh <- err
 			return
 		}
@@ -384,7 +384,7 @@ func (c *Client) bootstrapHeaders() map[string]string {
 	}
 }
 
-func (c *Client) bootstrap(ctx context.Context) error {
+func (c *Client) Bootstrap(ctx context.Context) error {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/", nil)
 	for key, value := range c.bootstrapHeaders() {
 		req.Header.Set(key, value)
@@ -711,7 +711,7 @@ func (c *Client) StreamMultimodalConversation(ctx context.Context, messages []ma
 			errCh <- fmt.Errorf("vision requires authentication")
 			return
 		}
-		if err := c.bootstrap(ctx); err != nil {
+		if err := c.Bootstrap(ctx); err != nil {
 			errCh <- err
 			return
 		}
@@ -1108,4 +1108,36 @@ func extractPartsText(message map[string]any) []string {
 		}
 	}
 	return texts
+}
+
+// CheckSession queries GET /api/auth/session to validate the token is active,
+// simulating the session check the ChatGPT web UI performs on page load.
+func (c *Client) CheckSession(ctx context.Context) error {
+	path := "/api/auth/session"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	for key, value := range c.headers(path, map[string]string{}) {
+		req.Header.Set(key, value)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return upstreamTransportError(path, err)
+	}
+	defer resp.Body.Close()
+	return ensureOK(resp, path)
+}
+
+// LoadConversations queries GET /backend-api/conversations to fetch recent
+// conversation history, simulating the sidebar load in the ChatGPT web UI.
+func (c *Client) LoadConversations(ctx context.Context) error {
+	path := "/backend-api/conversations?offset=0&limit=5"
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	for key, value := range c.headers(path, map[string]string{}) {
+		req.Header.Set(key, value)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return upstreamTransportError(path, err)
+	}
+	defer resp.Body.Close()
+	return ensureOK(resp, path)
 }

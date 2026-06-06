@@ -262,6 +262,8 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const [editType, setEditType] = useState<AccountType>("Free");
   const [editStatus, setEditStatus] = useState<AccountStatus>("正常");
   const [editQuota, setEditQuota] = useState("0");
+  const [editWarmingStatus, setEditWarmingStatus] = useState<string>("");
+  const [editWarmingDay, setEditWarmingDay] = useState("0");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -455,6 +457,8 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     setEditType(account.type);
     setEditStatus(account.status);
     setEditQuota(String(account.quota));
+    setEditWarmingStatus(account.warmingStatus ?? "");
+    setEditWarmingDay(String(account.warmingDay ?? 0));
   };
 
   const handleUpdateAccount = async () => {
@@ -468,6 +472,8 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
         type: editType,
         status: editStatus,
         quota: Number(editQuota || 0),
+        warming_status: editWarmingStatus || null,
+        warming_day: Number(editWarmingDay || 0),
       });
       applyAccountItems(data.items);
       setEditingAccount(null);
@@ -501,6 +507,19 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
       <Badge variant={status.badge} className="inline-flex items-center gap-1 rounded-md px-2 py-1">
         <StatusIcon className="size-3.5" />
         {account.status}
+      </Badge>
+    );
+  };
+
+  const renderWarmingBadge = (account: Account) => {
+    if (!account.warmingStatus) return null;
+    const errors = account.warmingErrors ?? 0;
+    let label = account.warmingStatus === "done" ? "已养熟" : `养号中 D${account.warmingDay ?? 0}`;
+    if (errors >= 3) label += ` (失败${errors}次)`;
+    const variant = account.warmingStatus === "done" ? "info" : errors >= 3 ? "destructive" : "warning";
+    return (
+      <Badge variant={variant as "info" | "warning" | "destructive"} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs">
+        {label}
       </Badge>
     );
   };
@@ -698,6 +717,31 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                 className="h-11 rounded-xl border-stone-200 bg-white"
               />
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-stone-700">养号状态</label>
+              <Select value={editWarmingStatus} onValueChange={setEditWarmingStatus}>
+                <SelectTrigger className="h-11 rounded-xl border-stone-200 bg-white">
+                  <SelectValue placeholder="不养号（正常业务）" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">不养号（正常业务）</SelectItem>
+                  <SelectItem value="warming">养号中</SelectItem>
+                  <SelectItem value="done">已养熟</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {editWarmingStatus === "warming" ? (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-stone-700">已养号天数</label>
+                <Input
+                  value={editWarmingDay}
+                  onChange={(event) => setEditWarmingDay(event.target.value)}
+                  type="number"
+                  min="0"
+                  className="h-11 rounded-xl border-stone-200 bg-white"
+                />
+              </div>
+            ) : null}
           </div>
           <DialogFooter className="pt-2">
             <Button
@@ -907,6 +951,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                         </TableHead>
                         <TableHead className="w-[34%]">账号</TableHead>
                         <TableHead className="w-48">状态 / 类型</TableHead>
+                        <TableHead className="w-28">养号</TableHead>
                         <TableHead className="w-32">额度</TableHead>
                         <TableHead className="w-44">恢复时间</TableHead>
                         <TableHead className="w-36">调用</TableHead>
@@ -938,6 +983,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                                 {account.type}
                               </Badge>
                             </div>
+                          </TableCell>
+                          <TableCell>
+                            {renderWarmingBadge(account)}
                           </TableCell>
                           <TableCell>
                             <Badge variant="info" className="rounded-md px-2 py-1">
@@ -987,6 +1035,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                               <Badge variant="secondary" className="rounded-md px-2 py-1">
                                 {account.type}
                               </Badge>
+                              {renderWarmingBadge(account)}
                               <Badge variant="info" className="rounded-md px-2 py-1">
                                 额度 {formatQuota(account)}
                               </Badge>

@@ -79,6 +79,11 @@ func NewApp() (*App, error) {
 	}
 	proxy := service.NewProxyService(cfg)
 	accounts := service.NewAccountService(storageBackend, cfg, proxy, logs)
+	if worker, err := newWarmingWorker(accounts, proxy, filepath.Join(cfg.DataDir, "warming_prompts.json")); err != nil {
+		logger.Warning("warming worker init failed, warming disabled", "error", err.Error())
+	} else {
+		accounts.SetWarmingRunner(worker)
+	}
 	auth := service.NewAuthService(storageBackend)
 	billing := service.NewBillingService(storageBackend, cfg)
 	auth.SetUserCreatedHook(func(userID string) {
