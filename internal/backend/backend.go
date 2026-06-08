@@ -1110,6 +1110,57 @@ func extractPartsText(message map[string]any) []string {
 	return texts
 }
 
+// DiagnoseSession runs Bootstrap + CheckSession and returns a structured
+// diagnostic result to help distinguish proxy/fingerprint issues from session expiry.
+func (c *Client) DiagnoseSession(ctx context.Context) map[string]any {
+	result := map[string]any{
+		"bootstrap":     map[string]any{},
+		"check_session": map[string]any{},
+		"conclusion":    "",
+	}
+
+	// Step 1: Bootstrap
+	bootstrapErr := c.Bootstrap(ctx)
+	bs := result["bootstrap"].(map[string]any)
+	if bootstrapErr != nil {
+		bs["ok"] = false
+		bs["error"] = bootstrapErr.Error()
+	} else {
+		bs["ok"] = true
+	}
+
+	// Step 2: CheckSession (only meaningful with a token)
+	cs := result["check_session"].(map[string]any)
+	if c.AccessToken != "" {
+		sessionErr := c.CheckSession(ctx)
+		if sessionErr != nil {
+			cs["ok"] = false
+			cs["error"] = sessionErr.Error()
+		} else {
+			cs["ok"] = true
+		}
+	} else {
+		cs["ok"] = false
+		cs["error"] = "no access token"
+	}
+
+	// Step 3: Conclusion from the combination
+	bsOK, _ := bs["ok"].(bool)
+	csOK, _ := cs["ok"].(bool)
+	switch {
+	case bsOK && csOK:
+		result["conclusion"] = "Bootstrap 和 Session 均正常"
+	case !bsOK && csOK:
+		result["conclusion"] = "Bootstrap 失败但 Session 正常 → 代理/指纹问题，非 Session 过期"
+	case !bsOK && !csOK:
+		result["conclusion"] = "Bootstrap 和 Session 均失败 → 可能是代理 IP 被封，也可能是 Session 过期"
+	case bsOK && !csOK:
+		result["conclusion"] = "Bootstrap 正常但 Session 失败 → Token 已过期"
+	}
+
+	return result
+}
+
 // CheckSession queries GET /api/auth/session to validate the token is active,
 // simulating the session check the ChatGPT web UI performs on page load.
 func (c *Client) CheckSession(ctx context.Context) error {

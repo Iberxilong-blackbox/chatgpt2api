@@ -17,6 +17,7 @@ import {
   Search,
   Trash2,
   UserRound,
+  Stethoscope,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -44,6 +45,8 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   deleteAccounts,
+  diagnoseAccount,
+  type DiagnoseResult,
   fetchAccountTokens,
   fetchAccounts,
   refreshAccounts,
@@ -269,6 +272,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(null);
+  const [diagnoseAccountId, setDiagnoseAccountId] = useState<string | null>(null);
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<string[]>([]);
 
   const canImportTokenAccounts = hasAPIPermission(session, "POST", "/api/accounts");
@@ -449,6 +455,21 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     }
   };
 
+  const handleDiagnose = async (accountId: string) => {
+    setDiagnoseAccountId(accountId);
+    setDiagnoseResult(null);
+    setIsDiagnosing(true);
+    try {
+      const result = await diagnoseAccount(accountId);
+      setDiagnoseResult(result);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "诊断失败";
+      toast.error(message);
+    } finally {
+      setIsDiagnosing(false);
+    }
+  };
+
   const openEditDialog = (account: Account) => {
     if (!canUpdateAccount) {
       return;
@@ -516,9 +537,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     const errors = account.warmingErrors ?? 0;
     let label = account.warmingStatus === "done" ? "已养熟" : `养号中 D${account.warmingDay ?? 0}`;
     if (errors >= 3) label += ` (失败${errors}次)`;
-    const variant = account.warmingStatus === "done" ? "info" : errors >= 3 ? "destructive" : "warning";
+    const variant = account.warmingStatus === "done" ? "info" : errors >= 3 ? "danger" : "warning";
     return (
-      <Badge variant={variant as "info" | "warning" | "destructive"} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs">
+      <Badge variant={variant as "info" | "warning" | "danger"} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs">
         {label}
       </Badge>
     );
@@ -594,6 +615,22 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
             {rowRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
           </Button>
         ) : null}
+        <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 rounded-lg hover:bg-muted hover:text-foreground"
+            onClick={() => void handleDiagnose(account.id)}
+            disabled={isDiagnosing}
+            aria-label="诊断账号"
+            title="诊断连接状态"
+          >
+            {isDiagnosing && diagnoseAccountId === account.id ? (
+              <LoaderCircle className="size-4 animate-spin" />
+            ) : (
+              <Stethoscope className="size-4" />
+            )}
+          </Button>
         {canDeleteAccounts ? (
           <Button
             type="button"
@@ -759,6 +796,98 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
             >
               {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
               保存修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diagnose result dialog */}
+      <Dialog
+        open={Boolean(diagnoseResult) || (isDiagnosing && Boolean(diagnoseAccountId))}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDiagnoseResult(null);
+            setDiagnoseAccountId(null);
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>诊断结果</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              Bootstrap + CheckSession 联合诊断
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {isDiagnosing ? (
+              <div className="flex flex-col items-center justify-center gap-3 py-8">
+                <LoaderCircle className="size-6 animate-spin text-stone-400" />
+                <p className="text-sm text-stone-500">正在诊断中…</p>
+              </div>
+            ) : diagnoseResult ? (
+              <>
+                <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+                  <p className="text-sm font-medium text-stone-700">结论</p>
+                  <p className="mt-1 text-sm leading-6 text-stone-600">{diagnoseResult.conclusion}</p>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className={cn(
+                    "rounded-xl border p-4",
+                    diagnoseResult.bootstrap.ok
+                      ? "border-emerald-200 bg-emerald-50"
+                      : "border-rose-200 bg-rose-50"
+                  )}>
+                    <p className="text-sm font-medium text-stone-700">Bootstrap</p>
+                    <p className="mt-1 text-sm">
+                      {diagnoseResult.bootstrap.ok ? (
+                        <span className="text-emerald-700">✓ 成功</span>
+                      ) : (
+                        <span className="text-rose-600">✗ 失败</span>
+                      )}
+                    </p>
+                    {diagnoseResult.bootstrap.error ? (
+                      <p className="mt-1.5 break-all font-mono text-xs leading-5 text-stone-500">
+                        {diagnoseResult.bootstrap.error}
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className={cn(
+                    "rounded-xl border p-4",
+                    diagnoseResult.check_session.ok
+                      ? "border-emerald-200 bg-emerald-50"
+                      : "border-rose-200 bg-rose-50"
+                  )}>
+                    <p className="text-sm font-medium text-stone-700">CheckSession</p>
+                    <p className="mt-1 text-sm">
+                      {diagnoseResult.check_session.ok ? (
+                        <span className="text-emerald-700">✓ 成功</span>
+                      ) : (
+                        <span className="text-rose-600">✗ 失败</span>
+                      )}
+                    </p>
+                    {diagnoseResult.check_session.error ? (
+                      <p className="mt-1.5 break-all font-mono text-xs leading-5 text-stone-500">
+                        {diagnoseResult.check_session.error}
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
+          <DialogFooter className="pt-2">
+            <Button
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => {
+                setDiagnoseResult(null);
+                setDiagnoseAccountId(null);
+              }}
+              disabled={isDiagnosing}
+            >
+              关闭
             </Button>
           </DialogFooter>
         </DialogContent>

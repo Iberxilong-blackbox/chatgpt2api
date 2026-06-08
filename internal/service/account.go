@@ -225,6 +225,41 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 				updates["fp"] = fp
 			}
 		}
+		// Carry over account metadata from the JSON record so that accounts
+		// imported from files have email, user_id, etc. set immediately
+		// without requiring a remote refresh.
+		for _, key := range []string{"email", "user_id", "chatgpt_account_id", "refresh_token", "id_token", "expired"} {
+			if val := util.Clean(record[key]); val != "" && current[key] == nil {
+				updates[key] = val
+			}
+		}
+		// session_token can appear in different formats across JSON sources:
+		// snake_case (session_token), camelCase (sessionToken), or nested
+		// inside session_raw/session objects. Check each until found.
+		if current["session_token"] == nil {
+			st := util.Clean(record["session_token"])
+			if st == "" {
+				st = util.Clean(record["sessionToken"])
+			}
+			if st == "" {
+				if raw, ok := record["session_raw"].(map[string]any); ok {
+					st = util.Clean(raw["sessionToken"])
+				}
+			}
+			if st == "" {
+				if sess, ok := record["session"].(map[string]any); ok {
+					st = util.Clean(sess["sessionToken"])
+				}
+			}
+			if st != "" {
+				updates["session_token"] = st
+			}
+		}
+		if updates["chatgpt_account_id"] == nil {
+			if val := util.Clean(record["account_id"]); val != "" && current["account_id"] == nil {
+				updates["chatgpt_account_id"] = val
+			}
+		}
 		normalized := normalizeAccount(mergeMaps(current, updates))
 		if normalized != nil {
 			indexed[token] = normalized
@@ -266,6 +301,11 @@ func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]a
 	if err := json.Unmarshal([]byte(sessionJSON), &session); err != nil {
 		return nil, fmt.Errorf("invalid session JSON: %w", err)
 	}
+
+	// Parse full JSON for fingerprint extraction (best-effort, non-fatal)
+	var record map[string]any
+	json.Unmarshal([]byte(sessionJSON), &record)
+
 	accessToken := util.Clean(session.AccessToken)
 	if accessToken == "" {
 		return nil, fmt.Errorf("session JSON missing accessToken")
@@ -275,21 +315,9 @@ func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]a
 		return nil, fmt.Errorf("session JSON missing sessionToken")
 	}
 
-	validated, err := s.refresher.RefreshSession(context.Background(), accessToken, sessionToken)
-	if err != nil {
-		return nil, fmt.Errorf("session token validation failed: %w", err)
-	}
-	accessToken = validated.AccessToken
-	if validated.SessionToken != "" {
-		sessionToken = validated.SessionToken
-	}
 	sessionExpires := any(session.Expires)
-	if validated.Expires != "" {
-		sessionExpires = validated.Expires
-	}
-
-	userID := util.Clean(validated.User.ID)
-	email := util.Clean(validated.User.Email)
+	userID := util.Clean(session.User.ID)
+	email := util.Clean(session.User.Email)
 	updates := map[string]any{
 		"session_token":   sessionToken,
 		"session_expires": sessionExpires,
@@ -300,8 +328,11 @@ func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]a
 	if email != "" {
 		updates["email"] = email
 	}
-	if name := util.Clean(validated.User.Name); name != "" {
+	if name := util.Clean(session.User.Name); name != "" {
 		updates["name"] = name
+	}
+	if record != nil {
+		updates["fp"] = prepareAccountFP(record)
 	}
 
 	matchedToken := s.findSessionImportAccountToken(accessToken, userID, email)
@@ -1569,26 +1600,26 @@ func IsAccountInvalidErrorMessage(message string) bool {
 	if text == "" || isBootstrapErrorMessage(text) {
 		return false
 	}
-	return strings.Contains(text, "token_invalidated") ||
-		strings.Contains(text, "token_revoked") ||
-		strings.Contains(text, "authentication token has been invalidated") ||
-		strings.Contains(text, "invalidated oauth token") ||
-		strings.Contains(text, "token expired") ||
-		strings.Contains(text, "authentication token is expired")
+	return strings.Contains(text, "token_revoked") ||
+		strings.Contains(text, "invalidated oauth token")
 }
 
-// IsAccountTokenExpiredErrorMessage detects refreshable token-expired errors.
-// Unlike IsAccountInvalidErrorMessage, it excludes non-refreshable cases such as
-// token_invalidated, token_revoked, and invalidated oauth token errors.
-// When this returns true and the account has session_token, refresh it instead of
-// marking the account invalid immediately.
+// IsAccountTokenExpiredErrorMessage detects refreshable token errors.
+// This includes both truly expired tokens and invalidated tokens where the
+// account itself is still valid but the access_token was rotated (e.g. due
+// to device context changes). When this returns true and the account has
+// session_token, refresh it instead of marking the account invalid.
+// Non-refreshable cases (token_revoked, invalidated oauth token) are left to
+// IsAccountInvalidErrorMessage.
 func IsAccountTokenExpiredErrorMessage(message string) bool {
 	text := strings.ToLower(strings.TrimSpace(message))
 	if text == "" || isBootstrapErrorMessage(text) {
 		return false
 	}
 	return strings.Contains(text, "token expired") ||
-		strings.Contains(text, "authentication token is expired")
+		strings.Contains(text, "authentication token is expired") ||
+		strings.Contains(text, "token_invalidated") ||
+		strings.Contains(text, "authentication token has been invalidated")
 }
 
 func IsAccountRateLimitedErrorMessage(message string) bool {

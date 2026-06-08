@@ -873,6 +873,19 @@ export async function updateAccount(
   });
 }
 
+export type DiagnoseResult = {
+  bootstrap: { ok: boolean; error?: string };
+  check_session: { ok: boolean; error?: string };
+  conclusion: string;
+};
+
+export async function diagnoseAccount(accountId: string) {
+  return httpRequest<DiagnoseResult>("/api/accounts/diagnose", {
+    method: "POST",
+    body: { account_id: accountId },
+  });
+}
+
 export async function generateImage(prompt: string, model?: ImageModel, size?: string, quality?: ImageQuality) {
   return httpRequest<ImageResponse>(
     "/v1/images/generations",

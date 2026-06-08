@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1208,6 +1209,22 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		result := a.accounts.DeleteAccounts(tokens)
 		a.redactAccountPayloadForIdentity(identity, result)
+		util.WriteJSON(w, http.StatusOK, result)
+	case r.URL.Path == "/api/accounts/diagnose" && r.Method == http.MethodPost:
+		body, _ := readJSONMap(r)
+		token := util.Clean(body["access_token"])
+		accountID := util.Clean(body["account_id"])
+		if token == "" && accountID != "" {
+			token = a.accounts.GetTokenByID(accountID)
+		}
+		if token == "" {
+			util.WriteError(w, http.StatusBadRequest, "access_token or account_id is required")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		client := a.engine.TextBackend(token)
+		result := client.DiagnoseSession(ctx)
 		util.WriteJSON(w, http.StatusOK, result)
 	case r.URL.Path == "/api/accounts/refresh" && r.Method == http.MethodPost:
 		body, _ := readJSONMap(r)
