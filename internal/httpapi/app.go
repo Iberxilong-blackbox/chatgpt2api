@@ -84,6 +84,17 @@ func NewApp() (*App, error) {
 	} else {
 		accounts.SetWarmingRunner(worker)
 	}
+	importDir := os.Getenv("CHATGPT2API_IMPORT_DIR")
+	if importDir == "" {
+		importDir = filepath.Join(cfg.DataDir, "auto_import")
+	}
+	accounts.SetImportDir(importDir)
+	go func() {
+		added, errors := accounts.ImportScanDir()
+		if added > 0 || len(errors) > 0 {
+			logger.Info("auto-import scan completed", "added", added, "errors", len(errors))
+		}
+	}()
 	auth := service.NewAuthService(storageBackend)
 	billing := service.NewBillingService(storageBackend, cfg)
 	auth.SetUserCreatedHook(func(userID string) {

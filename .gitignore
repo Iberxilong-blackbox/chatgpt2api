@@ -20,8 +20,9 @@ data
 edit
 
 docker-compose-local.yml
-
+.codegraph/
 .claude/settings.local.json
+draft.md
 
 # Environment variables
 .env
@@ -31,6 +32,9 @@ docker-compose-local.yml
 *.db
 *.sqlite
 *.sqlite3
+
+# sensitive 
+auto_import/
 
 # Git cache
 git_cache/

@@ -1269,6 +1269,12 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		result := map[string]any{"item": item, "items": a.accounts.ListAccounts()}
 		a.redactAccountPayloadForIdentity(identity, result)
 		util.WriteJSON(w, http.StatusOK, result)
+	case r.URL.Path == "/api/accounts/import-scan" && r.Method == http.MethodPost:
+		added, errors := a.accounts.ImportScanDir()
+		util.WriteJSON(w, http.StatusOK, map[string]any{
+			"added":  added,
+			"errors": errors,
+		})
 	case r.URL.Path == "/api/accounts/warming/start" && r.Method == http.MethodPost:
 		a.accounts.StartWarming()
 		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})

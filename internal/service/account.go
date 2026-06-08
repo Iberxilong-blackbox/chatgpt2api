@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +52,7 @@ type AccountService struct {
 	textCooldownUntil time.Time
 	refresher         *SessionRefresher
 	warmingWorker     WarmingRunner
+	importDir         string
 }
 
 const (
@@ -1754,13 +1757,22 @@ func prepareAccountFP(record map[string]any) map[string]any {
 		return result
 	}
 
-	fp := map[string]any{
-		"oai-device-id":  util.NewUUID(),
-		"oai-session-id": util.NewUUID(),
-	}
+	fp := map[string]any{}
 
 	// Case 2: External CPA fingerprint format (fingerprint.browser.*)
 	if raw, ok := record["fingerprint"].(map[string]any); ok {
+		// Reuse external oai-device-id/session-id when available; generate only as fallback
+		if v := util.Clean(raw["oai_device_id"]); v != "" {
+			fp["oai-device-id"] = v
+		} else {
+			fp["oai-device-id"] = util.NewUUID()
+		}
+		if v := util.Clean(raw["oai_session_id"]); v != "" {
+			fp["oai-session-id"] = v
+		} else {
+			fp["oai-session-id"] = util.NewUUID()
+		}
+
 		if browser, ok := raw["browser"].(map[string]any); ok {
 			mapped := map[string]string{
 				"user-agent":         "ua",
@@ -1785,6 +1797,8 @@ func prepareAccountFP(record map[string]any) map[string]any {
 	}
 
 	// Case 3: No fingerprint at all — auto-generate default
+	fp["oai-device-id"] = util.NewUUID()
+	fp["oai-session-id"] = util.NewUUID()
 	fp["impersonate"] = "chrome145"
 	fp["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 	fp["sec-ch-ua"] = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
@@ -2063,4 +2077,87 @@ func summarizeRefreshErrorValue(value any) string {
 		}
 	}
 	return ""
+}
+
+// SetImportDir configures the directory scanned by ImportScanDir.
+func (s *AccountService) SetImportDir(dir string) {
+	s.importDir = dir
+}
+
+// ImportScanDir is a convenience wrapper that calls ImportAccountJSONFiles
+// with the directory set via SetImportDir.
+func (s *AccountService) ImportScanDir() (int, map[string]string) {
+	if s.importDir == "" {
+		return 0, map[string]string{"": "import directory not configured"}
+	}
+	return s.ImportAccountJSONFiles(s.importDir)
+}
+
+// ImportAccountJSONFiles scans dir for .json files, parses each as an account
+// record, imports them via AddAccountRecords, and moves successfully parsed
+// files to dir/imported/ to prevent re-import.
+//
+// Returns the number of accounts added and a map of filename→error for files
+// that could not be parsed or imported. Files that parsed correctly but were
+// skipped (duplicate token) are moved to imported/ and do not appear in errors.
+func (s *AccountService) ImportAccountJSONFiles(dir string) (int, map[string]string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, map[string]string{"": err.Error()}
+	}
+
+	type fileRecord struct {
+		path   string
+		record map[string]any
+	}
+
+	var files []fileRecord
+	errors := map[string]string{}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(name), ".json") {
+			continue
+		}
+		fullPath := filepath.Join(dir, name)
+
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			errors[name] = err.Error()
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal(data, &record); err != nil {
+			errors[name] = err.Error()
+			continue
+		}
+		// accept both access_token (CPA) and accessToken
+		if util.Clean(record["access_token"]) == "" && util.Clean(record["accessToken"]) == "" {
+			errors[name] = "missing access_token"
+			continue
+		}
+		files = append(files, fileRecord{path: fullPath, record: record})
+	}
+
+	if len(files) == 0 {
+		return 0, errors
+	}
+
+	records := make([]map[string]any, len(files))
+	for i, f := range files {
+		records[i] = f.record
+	}
+
+	result := s.AddAccountRecords(records)
+	added := util.ToInt(result["added"], 0)
+
+	// Move all processed files to imported/ so they are never scanned again.
+	importedDir := filepath.Join(dir, "imported")
+	_ = os.MkdirAll(importedDir, 0o755)
+	for _, f := range files {
+		dest := filepath.Join(importedDir, filepath.Base(f.path))
+		_ = os.Rename(f.path, dest)
+	}
+
+	return added, errors
 }
