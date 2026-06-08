@@ -50,9 +50,10 @@ type AccountService struct {
 	browserHTTPClient func(profile string, timeout time.Duration) *http.Client
 	textRequestCount  map[string]int
 	textCooldownUntil time.Time
-	refresher         *SessionRefresher
-	warmingWorker     WarmingRunner
-	importDir         string
+	refresher           *SessionRefresher
+	warmingWorker       WarmingRunner
+	importDir           string
+	lastRefreshAttempt  map[string]time.Time
 }
 
 const (
@@ -76,7 +77,8 @@ func NewAccountService(backend storage.Backend, config AccountConfig, proxy *Pro
 		imageReservations: map[string]int{},
 		remoteBaseURL:     "https://chatgpt.com",
 		browserHTTPClient: browserHTTPClient,
-		textRequestCount:  map[string]int{},
+		textRequestCount:   map[string]int{},
+		lastRefreshAttempt: map[string]time.Time{},
 	}
 	// Initialize SessionRefresher with the uTLS client for /api/auth/session.
 	s.refresher = NewSessionRefresher(func(req *http.Request) (*http.Response, error) {
@@ -163,14 +165,16 @@ func (s *AccountService) listRefreshableLimitedTokens(now time.Time) []string {
 	defer s.mu.Unlock()
 	var out []string
 	for _, item := range s.items {
-		if item["status"] != "限流" {
+		if item["status"] != "限流" && item["status"] != "过期待刷新" {
 			continue
 		}
 		if isWarmingAccount(item) {
 			continue
 		}
-		if restoreAt, ok := parseAccountRestoreAt(item["restore_at"]); ok && restoreAt.After(now) {
-			continue
+		if item["status"] == "限流" {
+			if restoreAt, ok := parseAccountRestoreAt(item["restore_at"]); ok && restoreAt.After(now) {
+				continue
+			}
 		}
 		if token := util.Clean(item["access_token"]); token != "" {
 			out = append(out, token)
@@ -577,6 +581,30 @@ func (s *AccountService) GetTextAccessTokenWithRetry(exhaustedTokens map[string]
 	return "", false
 }
 
+// HasOtherAvailableToken checks whether there is at least one usable text token
+// besides the given accessToken. It excludes exhausted tokens, warming accounts,
+// and accounts with status 禁用/异常/刷新中/过期待刷新.
+// This is a read-only check with no side effects.
+func (s *AccountService) HasOtherAvailableToken(accessToken string, exhaustedTokens map[string]struct{}) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	pools := [][]map[string]any{s.filterNonFreeLocked(), s.filterFreeLocked()}
+	for _, pool := range pools {
+		for _, item := range pool {
+			token := util.Clean(item["access_token"])
+			if token == "" || token == accessToken {
+				continue
+			}
+			if _, exhausted := exhaustedTokens[token]; exhausted {
+				continue
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func (s *AccountService) HandleTokenExpiredOnRequest(expiredToken string) (newToken string, shouldRetry bool) {
 	account := s.GetAccount(expiredToken)
 	if account == nil {
@@ -609,6 +637,56 @@ func (s *AccountService) refreshAccountViaSessionAsync(accessToken, sessionToken
 		}
 		s.RefreshAccountViaSession(accessToken, newAccessToken, newSessionToken, newExpires)
 	}()
+}
+
+const refreshCooldown = 5 * time.Minute
+
+// canRefresh checks whether the given access token is allowed to be refreshed.
+// Returns false if the token was refreshed within the last refreshCooldown (5 minutes).
+func (s *AccountService) canRefresh(accessToken string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	last, ok := s.lastRefreshAttempt[accessToken]
+	if !ok {
+		return true
+	}
+	return time.Since(last) >= refreshCooldown
+}
+
+// markRefreshed records a refresh attempt timestamp for the given access token.
+func (s *AccountService) markRefreshed(accessToken string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRefreshAttempt[accessToken] = time.Now()
+}
+
+// TrySyncRefresh synchronously refreshes the account's access_token using its session_token.
+// It is intended as a last resort when no other accounts are available.
+// Returns (newAccessToken, true) on success, or ("", false) if the account is not found,
+// has no session_token, is in the cooldown period, or the refresh HTTP request fails.
+// On success the account data is updated and the cooldown timer is reset.
+func (s *AccountService) TrySyncRefresh(accessToken string) (string, bool) {
+	account := s.GetAccount(accessToken)
+	if account == nil {
+		return "", false
+	}
+	sessionToken := util.Clean(account["session_token"])
+	if sessionToken == "" {
+		return "", false
+	}
+	if !s.canRefresh(accessToken) {
+		return "", false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+	newAT, newST, newExp, err := s.refresher.RefreshToken(ctx, accessToken, sessionToken)
+	if err != nil {
+		return "", false
+	}
+	s.RefreshAccountViaSession(accessToken, newAT, newST, newExp)
+	s.markRefreshed(accessToken)
+	return newAT, true
 }
 
 func (s *AccountService) filterNonFreeLocked() []map[string]any {

@@ -247,6 +247,27 @@ func (e *Engine) collectVisionTextWithTokenRetry(ctx context.Context, messages [
 			return text, nil
 		}
 		lastErr = err
+		if service.IsAccountTokenExpiredErrorMessage(err.Error()) {
+			// If other accounts are available, switch without waiting for refresh.
+			if e.Accounts.HasOtherAvailableToken(token, exhaustedTokens) {
+				exhaustedTokens[token] = struct{}{}
+				e.Accounts.HandleTokenExpiredOnRequest(token)
+				continue
+			}
+			// No other accounts: try synchronous refresh as last resort.
+			if newToken, ok := e.Accounts.TrySyncRefresh(token); ok {
+				client = e.TextBackend(newToken)
+				text, err = e.CollectVisionText(ctx, client, messages, model, images)
+				if err == nil {
+					return text, nil
+				}
+				lastErr = err
+				exhaustedTokens[token] = struct{}{}
+				continue
+			}
+			exhaustedTokens[token] = struct{}{}
+			continue
+		}
 		if !e.markTextTokenExpiredForRetry(token, err, exhaustedTokens) {
 			return "", err
 		}
