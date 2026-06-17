@@ -12,14 +12,48 @@
 
 ### 存储后端选择
 
-默认使用 SQLite（`data/chatgpt2api.db`）。**多用户场景强烈建议使用 PostgreSQL**：
+默认使用 SQLite（`data/chatgpt2api.db`）。**多用户场景强烈建议使用 PostgreSQL**。
+
+### PostgreSQL 安装与配置（Ubuntu）
+
+```bash
+# 1. 安装
+sudo apt update && sudo apt install postgresql postgresql-client -y
+
+# 2. 启动 PostgreSQL
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# 3. 创建数据库和用户
+sudo -u postgres psql <<'SQL'
+CREATE USER chatgpt2api WITH PASSWORD 'your-strong-password';
+CREATE DATABASE chatgpt2api OWNER chatgpt2api;
+GRANT ALL PRIVILEGES ON DATABASE chatgpt2api TO chatgpt2api;
+\q
+SQL
+```
+
+> 建议使用 `127.0.0.1` 而非 `localhost` 连接，避免 Unix socket 认证问题。
+
+然后在 `.env` 中配置：
 
 ```
 STORAGE_BACKEND=postgres
-DATABASE_URL=postgresql://user:password@host:5432/chatgpt2api
+DATABASE_URL=postgresql://chatgpt2api:your-strong-password@127.0.0.1:5432/chatgpt2api
 ```
 
-也支持 MySQL：
+项目启动时会自动建表，无需手动导入 schema。
+
+### 首次从 SQLite 迁移到 PostgreSQL
+
+如果已有 SQLite 数据，启动 PostgreSQL 模式后，将账号 JSON 文件放入 `data/auto_import/` 目录重新导入即可：
+
+```bash
+curl -X POST http://localhost:8822/api/accounts/import-scan
+```
+
+### 使用 MySQL
+
 ```
 STORAGE_BACKEND=mysql
 DATABASE_URL=mysql://user:password@host:3306/chatgpt2api
