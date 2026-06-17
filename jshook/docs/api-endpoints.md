@@ -31,8 +31,8 @@
 
 ## 二、已登录用户的生图 API
 
-### 5. POST `/backend-api/sentinel/chat-requirements` ✅
-- **用途**: 获取 sentinel token + PoW 难度参数
+### 5. POST `/backend-api/sentinel/chat-requirements/prepare` ✅
+- **用途**: 获取 prepare_token + PoW / turnstile 挑战参数
 - **认证**: Bearer Token + PoW (legacy token)
 - **请求**:
 ```json
@@ -43,13 +43,41 @@
 - **响应**:
 ```json
 {
-  "token": "gAAAAAB...",        // sentinel token (后续所有请求需要)
+  "prepare_token": "gAAAAAB...",
   "proofofwork": {
     "required": true,
-    "seed": "...",
-    "difficulty": "000fffff..."
+    "seed": "0.292...",
+    "difficulty": "061a80"
   },
-  "turnstile": { "required": false },
+  "turnstile": {
+    "required": true,
+    "dx": "...",
+    "snapshot_dx": "..."
+  },
+  "so": {
+    "required": true,
+    "collector_dx": "..."
+  },
+  "expire_after": 3600
+}
+```
+
+### 5b. POST `/backend-api/sentinel/chat-requirements/finalize` ✅
+- **用途**: 提交 solve 结果，获取最终 sentinel token
+- **认证**: Bearer Token
+- **请求**:
+```json
+{
+  "prepare_token": "gAAAAAB...",
+  "proofofwork": "gAAAAAB...~S",
+  "turnstile": "QxscDxoMDAw..."
+}
+```
+- **响应**:
+```json
+{
+  "token": "gAAAAAB...",         // OpenAI-Sentinel-Chat-Requirements-Token
+  "so_token": "...",
   "expire_after": 3600
 }
 ```

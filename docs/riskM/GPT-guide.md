@@ -1343,7 +1343,7 @@ def _fetch_sentinel(
     resp = session.post(
         BASE_URL + path,
         headers={"Content-Type": "application/json", "X-OpenAI-Target-Path": path, "X-OpenAI-Target-Route": path},
-        json={"prepare_token": prepare_token, "proof_token": proof_token, "turnstile_token": turnstile_token},
+        json={"prepare_token": prepare_token, "proofofwork": proof_token, "turnstile": turnstile_token},
         timeout=30,
     )
     resp.raise_for_status()

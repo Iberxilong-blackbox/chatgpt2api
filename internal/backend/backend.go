@@ -412,58 +412,87 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 }
 
 func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, error) {
-	path := "/backend-anon/sentinel/chat-requirements"
+	basePath := "/backend-anon/sentinel/chat-requirements"
 	contextName := "noauth_chat_requirements"
 	if c.AccessToken != "" {
-		path = "/backend-api/sentinel/chat-requirements"
+		basePath = "/backend-api/sentinel/chat-requirements"
 		contextName = "auth_chat_requirements"
 	}
 	p := buildLegacyRequirementsToken(c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
-	resp, err := c.postJSON(ctx, path, map[string]any{"p": p}, c.headers(path, map[string]string{"Content-Type": "application/json"}), false)
+
+	// Step 1: POST /prepare
+	preparePath := basePath + "/prepare"
+	resp, err := c.postJSON(ctx, preparePath, map[string]any{"p": p}, c.headers(preparePath, map[string]string{"Content-Type": "application/json"}), false)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return ChatRequirements{}, upstreamHTTPError(contextName, resp.StatusCode, data)
+		return ChatRequirements{}, upstreamHTTPError(contextName+"/prepare", resp.StatusCode, data)
 	}
-	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
+	var preparePayload map[string]any
+	if err := json.Unmarshal(data, &preparePayload); err != nil {
 		return ChatRequirements{}, err
 	}
-	reqs, err := c.buildRequirements(payload, p)
+	prepareToken := util.Clean(preparePayload["prepare_token"])
+	if prepareToken == "" {
+		return ChatRequirements{}, fmt.Errorf("missing prepare_token in %s response: %v", contextName, preparePayload)
+	}
+
+	// Step 2: solve PoW + turnstile challenges
+	proofToken, turnstileToken, err := c.buildRequirements(preparePayload, p)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
-	if reqs.Token == "" {
-		if c.AccessToken != "" {
-			return ChatRequirements{}, fmt.Errorf("missing auth chat requirements token: %v", payload)
-		}
-		return ChatRequirements{}, fmt.Errorf("missing chat requirements token: %v", payload)
+
+	// Step 3: POST /finalize
+	finalizePath := basePath + "/finalize"
+	finalizePayload := map[string]any{
+		"prepare_token": prepareToken,
+		"proofofwork":   proofToken,
+		"turnstile":     turnstileToken,
 	}
-	return reqs, nil
+	resp2, err := c.postJSON(ctx, finalizePath, finalizePayload, c.headers(finalizePath, map[string]string{"Content-Type": "application/json"}), false)
+	if err != nil {
+		return ChatRequirements{}, err
+	}
+	defer resp2.Body.Close()
+	data2, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode < 200 || resp2.StatusCode >= 300 {
+		return ChatRequirements{}, upstreamHTTPError(contextName+"/finalize", resp2.StatusCode, data2)
+	}
+	var finalizePayload2 map[string]any
+	if err := json.Unmarshal(data2, &finalizePayload2); err != nil {
+		return ChatRequirements{}, err
+	}
+	token := util.Clean(finalizePayload2["token"])
+	if token == "" {
+		if c.AccessToken != "" {
+			return ChatRequirements{}, fmt.Errorf("missing auth chat requirements token: %v", finalizePayload2)
+		}
+		return ChatRequirements{}, fmt.Errorf("missing chat requirements token: %v", finalizePayload2)
+	}
+	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: util.Clean(finalizePayload2["so_token"]), Raw: finalizePayload2}, nil
 }
 
-func (c *Client) buildRequirements(data map[string]any, sourceP string) (ChatRequirements, error) {
+func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken string, err error) {
 	if arkose := util.StringMap(data["arkose"]); util.ToBool(arkose["required"]) {
-		return ChatRequirements{}, fmt.Errorf("chat requirements requires arkose token, which is not implemented")
+		return "", "", fmt.Errorf("chat requirements requires arkose token, which is not implemented")
 	}
-	proofToken := ""
 	proof := util.StringMap(data["proofofwork"])
 	if util.ToBool(proof["required"]) {
 		token, err := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
 		if err != nil {
-			return ChatRequirements{}, err
+			return "", "", err
 		}
 		proofToken = token
 	}
-	turnstileToken := ""
 	turnstile := util.StringMap(data["turnstile"])
 	if util.ToBool(turnstile["required"]) && util.Clean(turnstile["dx"]) != "" {
 		turnstileToken = solveTurnstileToken(util.Clean(turnstile["dx"]), sourceP)
 	}
-	return ChatRequirements{Token: util.Clean(data["token"]), ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: util.Clean(data["so_token"]), Raw: data}, nil
+	return proofToken, turnstileToken, nil
 }
 
 func (c *Client) chatTarget() (string, string) {

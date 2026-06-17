@@ -10,7 +10,7 @@
 | P0 | Turnstile p-token + PoW Config 补全 | ✅ 已完成 |
 | P1 | timeOrigin + FNV Hash + 元数据补全 | ✅ 已完成 |
 | P2 | thinking_effort + 回退串 + 版本动态更新 | ✅ 已完成 |
-| P3 | 端点验证 + 缺失 Headers | ⏳ 待浏览器验证 |
+| P3 | 端点验证 + 缺失 Headers | ✅ 已完成 |
 
 **改动汇总**：涉及 3 个文件，约 60 行代码，编译及测试通过。
 
@@ -235,13 +235,11 @@ DefaultClientBuildNumber = "5955942"
 
 ## P3 — 加固（降低长期风险）
 
-### 9. Sentinel 端点路径验证
+### 9. ✅ Sentinel 端点路径验证（已完成）
 
-验证当前 `POST /backend-api/sentinel/chat-requirements`（单步）是否仍然有效，还是需要改为文档中的两步流程（`/prepare` → `/finalize`）。
+**结论**：ChatGPT 当前使用两步流程 `POST /backend-api/sentinel/chat-requirements/prepare` → `/finalize`。已修改 `internal/backend/backend.go` 中的 `getChatRequirements`。
 
-**方法**：在真实浏览器中打开 ChatGPT DevTools，发起对话，观察 sentinel 相关网络请求的准确路径。
-
-**预计工作量**：验证 30 分钟，如需修改 ~30 行代码
+**同时修正**：finalize payload 中字段名为 `proofofwork` 和 `turnstile`（非文档推测的 `proof_token` / `turnstile_token`），已同步修正代码和文档。
 
 ---
 

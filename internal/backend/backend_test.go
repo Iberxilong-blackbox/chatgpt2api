@@ -195,9 +195,12 @@ func TestStreamResponsesImageUsesOfficialPrepareAndConversationRoutes(t *testing
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			if err := json.NewDecoder(r.Body).Decode(&prepareBody); err != nil {
 				t.Fatalf("decode prepare body: %v", err)
@@ -322,9 +325,12 @@ func TestStreamResponsesImageUsesOfficialContinuationPointers(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			if err := json.NewDecoder(r.Body).Decode(&prepareBody); err != nil {
 				t.Fatalf("decode prepare body: %v", err)
@@ -427,9 +433,12 @@ func TestStreamResponsesImageUsesCodeInterpreterAssetDownload(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -493,9 +502,12 @@ func TestStreamResponsesImageIgnoresHistoricalInterpreterAssets(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -653,9 +665,12 @@ func TestStreamResponsesImageUsesDirectSSEImageAssetPointer(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -716,9 +731,12 @@ func TestStreamResponsesImageIgnoresFalseToolInvokedForImageGenResult(t *testing
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -846,9 +864,12 @@ func TestStreamResponsesImageDoesNotTreatQueuedAssistantNoticeAsFinalText(t *tes
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -930,9 +951,12 @@ func TestStreamResponsesImagePollsAsyncImageTaskForCurrentTurn(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -992,9 +1016,12 @@ func TestStreamResponsesImageRetriesConversationPollRateLimit(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -1054,9 +1081,12 @@ func TestStreamResponsesImageReturnsPolledConversationText(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -1114,9 +1144,12 @@ func TestStreamResponsesImageEmitsFinalTextWhenNoImageResult(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
@@ -1172,9 +1205,12 @@ func TestStreamResponsesImageFetchesHistoryTextForTextTurn(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`<html data-build="build-1"><script src="/backend-api/sentinel/sdk.js"></script></html>`))
-		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements":
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/prepare":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"token":"req-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+			_, _ = w.Write([]byte(`{"prepare_token":"prep-token","proofofwork":{"required":false},"turnstile":{"required":false},"arkose":{"required":false}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/backend-api/sentinel/chat-requirements/finalize":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"token":"req-token"}`))
 		case r.Method == http.MethodPost && r.URL.Path == officialPreparePath:
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"conduit_token":"conduit-token"}`))
