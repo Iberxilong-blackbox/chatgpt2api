@@ -857,6 +857,7 @@ func (c *Client) startOfficialImageConversation(ctx context.Context, prompt stri
 	}
 	metadata := map[string]any{
 		"developer_mode_connector_ids": []any{},
+		"selected_sources":             []any{},
 		"selected_github_repos":        []any{},
 		"selected_all_github_repos":    false,
 		"system_hints":                 []any{"picture_v2"},
@@ -922,6 +923,9 @@ func (c *Client) startOfficialImageConversation(ctx context.Context, prompt stri
 			"screen_width":      2560,
 			"app_name":          "chatgpt.com",
 		},
+	}
+	if isThinkingModel(request.Model) {
+		payload["thinking_effort"] = "extended"
 	}
 	headers := c.officialHeaders(officialStreamPath, reqs, conduitToken, "text/event-stream")
 	if conversationID := strings.TrimSpace(request.ConversationID); conversationID != "" {

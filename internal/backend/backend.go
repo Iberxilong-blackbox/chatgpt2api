@@ -51,8 +51,9 @@ type Client struct {
 	userAgent    string
 	deviceID     string
 	sessionID    string
-	powSources   []string
-	powDataBuild string
+	powSources    []string
+	powDataBuild  string
+	powTimeOrigin float64
 }
 
 type ChatRequirements struct {
@@ -385,6 +386,7 @@ func (c *Client) bootstrapHeaders() map[string]string {
 }
 
 func (c *Client) Bootstrap(ctx context.Context) error {
+	c.powTimeOrigin = float64(time.Now().UnixMilli())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/", nil)
 	for key, value := range c.bootstrapHeaders() {
 		req.Header.Set(key, value)
@@ -402,6 +404,10 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	if len(c.powSources) == 0 {
 		c.powSources = []string{defaultPOWScript}
 	}
+	// Extract current client version from dataBuild (e.g., "c/{hash}/_" → "prod-{hash}")
+	if parts := regexp.MustCompile(`c/([^/]+)/_`).FindStringSubmatch(c.powDataBuild); len(parts) > 1 {
+		c.ClientVersion = "prod-" + parts[1]
+	}
 	return nil
 }
 
@@ -412,7 +418,7 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		path = "/backend-api/sentinel/chat-requirements"
 		contextName = "auth_chat_requirements"
 	}
-	p := buildLegacyRequirementsToken(c.userAgent, c.powSources, c.powDataBuild)
+	p := buildLegacyRequirementsToken(c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
 	resp, err := c.postJSON(ctx, path, map[string]any{"p": p}, c.headers(path, map[string]string{"Content-Type": "application/json"}), false)
 	if err != nil {
 		return ChatRequirements{}, err
@@ -426,7 +432,7 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return ChatRequirements{}, err
 	}
-	reqs, err := c.buildRequirements(payload, "")
+	reqs, err := c.buildRequirements(payload, p)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
@@ -446,7 +452,7 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (ChatReq
 	proofToken := ""
 	proof := util.StringMap(data["proofofwork"])
 	if util.ToBool(proof["required"]) {
-		token, err := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent, c.powSources, c.powDataBuild)
+		token, err := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
 		if err != nil {
 			return ChatRequirements{}, err
 		}
@@ -474,6 +480,10 @@ func textModelSlug(model string) string {
 	default:
 		return strings.TrimSpace(model)
 	}
+}
+
+func isThinkingModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "thinking")
 }
 
 func (c *Client) prepareTextConversation(ctx context.Context, messages []map[string]any, reqs ChatRequirements, model string) (string, error) {
@@ -529,6 +539,7 @@ func (c *Client) startTextConversation(ctx context.Context, messages []map[strin
 				},
 				"metadata": map[string]any{
 					"developer_mode_connector_ids": []any{},
+					"selected_sources":             []any{},
 					"selected_github_repos":        []any{},
 					"selected_all_github_repos":    false,
 					"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
@@ -557,6 +568,9 @@ func (c *Client) startTextConversation(ctx context.Context, messages []map[strin
 			"screen_width":      2560,
 			"app_name":          "chatgpt.com",
 		},
+	}
+	if isThinkingModel(model) {
+		payload["thinking_effort"] = "extended"
 	}
 	return c.postJSON(ctx, officialStreamPath, payload, c.officialHeaders(officialStreamPath, reqs, conduitToken, "text/event-stream"), true)
 }
@@ -667,6 +681,7 @@ func (c *Client) startMultimodalConversation(ctx context.Context, messages []map
 				},
 				"metadata": map[string]any{
 					"developer_mode_connector_ids": []any{},
+					"selected_sources":             []any{},
 					"selected_github_repos":        []any{},
 					"selected_all_github_repos":    false,
 					"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
@@ -697,6 +712,9 @@ func (c *Client) startMultimodalConversation(ctx context.Context, messages []map
 			"screen_width":      2560,
 			"app_name":          "chatgpt.com",
 		},
+	}
+	if isThinkingModel(model) {
+		payload["thinking_effort"] = "extended"
 	}
 	return c.postJSON(ctx, officialStreamPath, payload, c.officialHeaders(officialStreamPath, reqs, conduitToken, "text/event-stream"), true)
 }
@@ -839,9 +857,11 @@ func conversationUserMessage(content string) map[string]any {
 		"create_time": float64(time.Now().UnixNano()) / 1e9,
 		"content":     map[string]any{"content_type": "text", "parts": []any{content}},
 		"metadata": map[string]any{
-			"selected_github_repos":     []any{},
-			"selected_all_github_repos": false,
-			"serialization_metadata":    map[string]any{"custom_symbol_offsets": []any{}},
+			"developer_mode_connector_ids": []any{},
+			"selected_sources":             []any{},
+			"selected_github_repos":        []any{},
+			"selected_all_github_repos":    false,
+			"serialization_metadata":       map[string]any{"custom_symbol_offsets": []any{}},
 		},
 	}
 }

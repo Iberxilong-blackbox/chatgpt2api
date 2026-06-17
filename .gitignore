@@ -18,7 +18,8 @@ __pycache__/
 node_modules/
 data
 edit
-
+# useless
+docs/riskM/image.png
 docker-compose-local.yml
 .codegraph/
 .claude/settings.local.json
@@ -39,3 +40,5 @@ auto_import/
 # Git cache
 git_cache/
 .ace-tool/
+.codegraph/
+

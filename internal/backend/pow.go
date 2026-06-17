@@ -2,9 +2,7 @@ package backend
 
 import (
 	"bytes"
-	"crypto/sha3"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -44,15 +42,15 @@ func parsePOWResources(html string) ([]string, string) {
 	return sources, dataBuild
 }
 
-func buildLegacyRequirementsToken(userAgent string, scriptSources []string, dataBuild string) string {
+func buildLegacyRequirementsToken(userAgent string, scriptSources []string, dataBuild string, timeOrigin float64) string {
 	seed := fmt.Sprintf("%f", rand.Float64())
-	config := buildPOWConfig(userAgent, scriptSources, dataBuild)
+	config := buildPOWConfig(userAgent, scriptSources, dataBuild, timeOrigin)
 	answer, _ := powGenerate(seed, "0fffff", config, 500000)
 	return "gAAAAAC" + answer
 }
 
-func buildProofToken(seed, difficulty, userAgent string, scriptSources []string, dataBuild string) (string, error) {
-	config := buildPOWConfig(userAgent, scriptSources, dataBuild)
+func buildProofToken(seed, difficulty, userAgent string, scriptSources []string, dataBuild string, timeOrigin float64) (string, error) {
+	config := buildPOWConfig(userAgent, scriptSources, dataBuild, timeOrigin)
 	answer, solved := powGenerate(seed, difficulty, config, 500000)
 	if !solved {
 		return "", fmt.Errorf("failed to solve proof token: difficulty=%s", difficulty)
@@ -60,7 +58,7 @@ func buildProofToken(seed, difficulty, userAgent string, scriptSources []string,
 	return "gAAAAAB" + answer, nil
 }
 
-func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string) []any {
+func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string, timeOrigin float64) []any {
 	if len(scriptSources) == 0 {
 		scriptSources = []string{defaultPOWScript}
 	}
@@ -109,17 +107,19 @@ func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string) 
 		util.NewUUID(),
 		"",
 		randomChoiceInt(cores),
-		float64(time.Now().UnixNano())/1e6 - float64(time.Now().UnixNano())/1e6,
+		timeOrigin,
+		0, // Number("ai" in window)
+		0, // Number("createPRNG" in window)
+		0, // Number("cache" in window)
+		0, // Number("data" in window)
+		0, // Number("solana" in window)
+		0, // Number("dump" in window)
+		0, // Number("InstallTrigger" in window) — Chrome/Edge=0, Firefox=1
 	}
 }
 
 func powGenerate(seed, difficulty string, config []any, limit int) (string, bool) {
-	target, err := hex.DecodeString(difficulty)
-	if err != nil {
-		target = []byte{0x0f, 0xff, 0xff}
-	}
-	diffLen := len(difficulty) / 2
-	seedBytes := []byte(seed)
+	seedStr := seed
 	part1 := mustMarshal(config[:3])
 	part1 = append(part1[:len(part1)-1], ',')
 	part2 := mustMarshal(config[4:9])
@@ -135,13 +135,39 @@ func powGenerate(seed, difficulty string, config []any, limit int) (string, bool
 			[]byte(fmt.Sprint(i >> 1)),
 			part3,
 		}, nil)
-		encoded := []byte(base64.StdEncoding.EncodeToString(finalJSON))
-		hash := sha3.Sum512(append(seedBytes, encoded...))
-		if bytes.Compare(hash[:diffLen], target) <= 0 {
-			return string(encoded), true
+		encoded := base64.StdEncoding.EncodeToString(finalJSON)
+		hashStr := zvtHash(seedStr + encoded)
+		if hashStr[:len(difficulty)] <= difficulty {
+			return encoded, true
 		}
 	}
-	return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`)), false
+	return randomBase64(24) + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`)), false
+}
+
+// randomBase64 returns a random string of n base64-safe characters.
+func randomBase64(n int) string {
+	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
+
+// zvtHash implements the FNV-1a variant used by ChatGPT's sentinel PoW verification.
+// Mirrors the zvt(e) function in the sentinel SDK.
+func zvtHash(input string) string {
+	h := uint32(2166136261) // FNV offset basis
+	for i := 0; i < len(input); i++ {
+		h ^= uint32(input[i])
+		h = uint32(uint64(h) * 16777619) // FNV prime (32-bit Math.imul)
+	}
+	h ^= h >> 16
+	h = uint32(uint64(h) * 2246822507)
+	h ^= h >> 13
+	h = uint32(uint64(h) * 3266489909)
+	h ^= h >> 16
+	return fmt.Sprintf("%08x", h)
 }
 
 func mustMarshal(v any) []byte {
