@@ -182,36 +182,27 @@ sudo nginx -t
 
 # 5. 重新加载 nginx
 sudo systemctl reload nginx
-
-# 6. （可选）如果采用 SSL，用 Let's Encrypt 申请证书
-# sudo apt install certbot python3-certbot-nginx -y
-# sudo certbot --nginx -d your-domain.com
 ```
 
 > 配置文件也可以放 `/etc/nginx/conf.d/chatgpt2api.conf`（CentOS/RHEL 惯例），效果相同。
 
 ---
 
-### 安全加固版配置（推荐）
+### 第一步：HTTP 配置（初始部署）
 
-此配置整合了[安全加固指南](security-hardening-guide.md)的全部措施：敏感文件拦截、IP 白名单、频率限制、安全响应头等。
+先用 HTTP 跑通，后面用 certbot 一键添加 SSL。
+
+此配置整合了[安全加固指南](security-hardening-guide.md)的核心措施：敏感文件拦截、IP 白名单、频率限制、安全响应头等。
 
 ```nginx
 # /etc/nginx/sites-available/chatgpt2api
 
-# ---- 频率限制：登录防爆破（定义共享内存区域） ----
+# ---- 频率限制：登录防爆破 ----
 limit_req_zone $binary_remote_addr zone=login_limit:10m rate=3r/m;
 
-# ---- API 频率限制（可选） ----
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=60r/m;
-
 server {
-    listen 443 ssl http2;
+    listen 80;
     server_name your-domain.com;  # ← 替换为你的域名
-
-    # ---- SSL 证书（Let's Encrypt） ----
-    # ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
 
     # ---- 不泄露 nginx 版本 ----
     server_tokens off;
@@ -221,8 +212,6 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    # 配置 HTTPS 后取消注释：
-    # add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
     # ---- 上传和请求体大小限制 ----
     client_max_body_size 50m;
@@ -332,19 +321,31 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # 长连接超时（生图默认 300s）
         proxy_read_timeout 600s;
         proxy_send_timeout 600s;
     }
 }
-
-# ---- HTTP → HTTPS 重定向 ----
-server {
-    listen 80;
-    server_name your-domain.com;  # ← 替换为你的域名
-    return 301 https://$host$request_uri;
-}
 ```
+
+### 第二步：certbot 申请 SSL 证书
+
+HTTP 跑通后，用 certbot 一键添加 HTTPS，它会**自动修改**当前 nginx 配置：
+
+```bash
+# 安装 certbot
+sudo apt install certbot python3-certbot-nginx -y
+
+# 申请证书并自动配置 SSL（certbot 会自动改写 nginx 配置）
+sudo certbot --nginx -d your-domain.com
+```
+
+certbot 执行完毕后会自动：
+- 申请 SSL 证书
+- 在配置中追加 `listen 443 ssl http2;` 和证书路径
+- 添加 HTTP → HTTPS 的 301 跳转
+- 添加 HSTS 等安全响应头
+
+> 无需手动填写 SSL 相关配置。certbot 处理完后，用 `sudo nginx -t` 验证，`sudo systemctl reload nginx` 重载即可。
 
 ### 关键配置说明
 
@@ -355,9 +356,9 @@ server {
 | `client_max_body_size` | 建议 | 生图编辑（`/v1/images/edits`）会上传参考图，需要足够大 |
 | `limit_req_zone` | 建议 | 登录接口 3 次/分钟，防暴力破解 |
 | IP 白名单 | 建议 | `/auth/login` 和 `/api/admin/` 仅允许你的 IP 访问 |
-| SSL | 建议 | 生产环境务必配置 HTTPS，可使用 Let's Encrypt + certbot |
+| `server_tokens off` | 建议 | 隐藏 nginx 版本号，增加攻击者指纹识别难度 |
 
-> 更多安全加固措施（fail2ban、防火墙、SSH 加固等）详见 [安全加固指南](security-hardening-guide.md)。
+> HTTPS 配置见上方的 certbot 步骤。更多安全加固措施（fail2ban、防火墙、SSH 加固等）详见 [安全加固指南](security-hardening-guide.md)。
 
 ---
 
