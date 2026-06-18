@@ -192,8 +192,8 @@ cd .. && go build -o chatgpt2api ./internal
 #### 1. 创建专用用户和目录
 
 ```bash
-# 创建低权限系统用户（不能登录 shell）
-sudo useradd -r -s /usr/sbin/nologin -M chatgpt2api
+# 创建低权限系统用户（不能登录 shell，home 目录指向应用目录）
+sudo useradd -r -s /usr/sbin/nologin -d /opt/chatgpt2api -M chatgpt2api
 
 # 创建应用目录并部署文件
 sudo mkdir -p /opt/chatgpt2api/data
