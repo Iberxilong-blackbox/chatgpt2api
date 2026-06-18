@@ -117,6 +117,32 @@ docker pull zyphrzero/chatgpt2api:latest
 
 ## 裸机部署
 
+### 前置依赖安装
+
+```bash
+# 安装 Go（编译后端必需）
+# 方法一：使用 apt 安装（版本可能较旧）
+sudo apt update && sudo apt install golang-go -y
+
+# 方法二：从官网安装最新版
+GO_VERSION=1.22.4
+wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
+# 将 /usr/local/go/bin 加入 PATH（已追加到 ~/.bashrc 则无需重复）
+echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
+source ~/.bashrc
+# 清理安装包
+rm go${GO_VERSION}.linux-amd64.tar.gz
+
+# 安装 Bun（JavaScript 运行时与包管理器，构建前端必需）
+curl -fsSL https://bun.sh/install | bash
+# 重新加载 shell 或执行：source ~/.bashrc
+```
+
+> 验证安装：`go version`、`bun --version`
+
+### 构建与运行
+
 ```bash
 # 1. 构建前端
 cd web && bun install && bun run build
@@ -132,27 +158,166 @@ cd .. && go build -o chatgpt2api ./internal
 
 ## Nginx 反向代理配置
 
-### 重要前提：图片鉴权
+### 创建 Nginx 配置文件
 
-项目中的图片访问有权限校验（`authorizeImageFileRequest`），区分 `public` 和 `private`：
-- `public` 图片：任何人均可访问
-- `private` 图片：仅 owner 和管理员可访问
+在 Ubuntu/Debian 上，nginx 站点配置文件的规范路径是：
 
-**如果让 nginx 直接 serve 图片目录，会绕过鉴权。** 需要根据你的业务决定：
-- 如果所有图片都是 public，可以让 nginx 直接 serve 以提升性能
-- 如果有 private 图片，必须让 Go 后端处理图片请求（走鉴权）
+```
+/etc/nginx/sites-available/chatgpt2api   # 存放配置文件
+/etc/nginx/sites-enabled/chatgpt2api     # 启用站点（软链接）
+```
 
-### 推荐配置（走 Go 后端，保留鉴权）
+创建步骤：
+
+```bash
+# 1. 创建配置文件
+sudo nano /etc/nginx/sites-available/chatgpt2api
+
+# 2. 将下方配置粘贴进去，替换域名和 IP
+# 3. 启用站点（创建软链接到 sites-enabled）
+sudo ln -sf /etc/nginx/sites-available/chatgpt2api /etc/nginx/sites-enabled/
+
+# 4. 测试配置语法
+sudo nginx -t
+
+# 5. 重新加载 nginx
+sudo systemctl reload nginx
+
+# 6. （可选）如果采用 SSL，用 Let's Encrypt 申请证书
+# sudo apt install certbot python3-certbot-nginx -y
+# sudo certbot --nginx -d your-domain.com
+```
+
+> 配置文件也可以放 `/etc/nginx/conf.d/chatgpt2api.conf`（CentOS/RHEL 惯例），效果相同。
+
+---
+
+### 安全加固版配置（推荐）
+
+此配置整合了[安全加固指南](security-hardening-guide.md)的全部措施：敏感文件拦截、IP 白名单、频率限制、安全响应头等。
 
 ```nginx
+# /etc/nginx/sites-available/chatgpt2api
+
+# ---- 频率限制：登录防爆破（定义共享内存区域） ----
+limit_req_zone $binary_remote_addr zone=login_limit:10m rate=3r/m;
+
+# ---- API 频率限制（可选） ----
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=60r/m;
+
 server {
     listen 443 ssl http2;
-    server_name your-domain.com;
+    server_name your-domain.com;  # ← 替换为你的域名
 
-    # 上传和请求体大小限制
+    # ---- SSL 证书（Let's Encrypt） ----
+    # ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+
+    # ---- 不泄露 nginx 版本 ----
+    server_tokens off;
+
+    # ---- 安全响应头 ----
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # 配置 HTTPS 后取消注释：
+    # add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # ---- 上传和请求体大小限制 ----
     client_max_body_size 50m;
 
-    # API 和 Web —— 全部反向代理到 Go
+    # ==============================================================
+    # 安全拦截：拒绝访问敏感文件和目录
+    # ==============================================================
+
+    # 拒绝所有 .开头的隐藏文件/目录
+    location ~ /\. {
+        deny all;
+        return 404;
+    }
+
+    # 拒绝 data 目录（含 SQLite 数据库）
+    location /data {
+        deny all;
+        return 404;
+    }
+
+    # 拒绝项目敏感文件
+    location ~* (\.env|\.git|Dockerfile|docker-compose|chatgpt2api\.db|Makefile|\.sql|chatgpt2api)$ {
+        deny all;
+        return 404;
+    }
+
+    # ==============================================================
+    # 重要前提：图片鉴权
+    # 项目中的图片访问有权限校验（authorizeImageFileRequest），区分 public 和 private。
+    # 如果让 nginx 直接 serve 图片目录，会绕过鉴权。
+    #
+    # 方案 A（默认）：走 Go 后端，保留鉴权 —— 下方 location / 统一处理
+    # 方案 B（仅全 public 场景）：nginx 直接 serve 图片 —— 见下方"性能优化配置"注释块
+    #
+    # 本配置默认采用方案 A。如需方案 B，取消下面图片 location 块的注释，
+    # 并将 location / 的 proxy_pass 改为只代理非图片路径（见注释提示）。
+    # ==============================================================
+
+    # ---- 方案 B：nginx 直接 serve 图片（全 public 场景，取消注释启用） ----
+    # location /images/ {
+    #     alias /app/data/images/;
+    #     expires 7d;
+    #     add_header Cache-Control "public, max-age=604800";
+    #     add_header Access-Control-Allow-Origin "*";
+    # }
+    # location /image-thumbnails/ {
+    #     alias /app/data/image_thumbnails/;
+    #     expires 1y;
+    #     add_header Cache-Control "public, max-age=31536000, immutable";
+    #     add_header Access-Control-Allow-Origin "*";
+    # }
+
+    # ==============================================================
+    # 管理入口 IP 白名单
+    # ==============================================================
+
+    # 登录接口：频率限制 + IP 白名单
+    location /auth/login {
+        # IP 白名单（替换为你的 IP）
+        allow 1.2.3.4;    # ← 替换为你的家庭/办公 IP
+        # allow 5.6.7.8;  # ← 备用 IP
+        deny all;
+
+        limit_req zone=login_limit burst=3 nodelay;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
+    # 管理 API：IP 白名单
+    location /api/admin/ {
+        allow 1.2.3.4;    # ← 替换为你的 IP
+        deny all;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
+    # ==============================================================
+    # 其余所有请求走 Go 后端
+    # ==============================================================
     location / {
         proxy_pass http://127.0.0.1:8822;
         proxy_http_version 1.1;
@@ -172,54 +337,12 @@ server {
         proxy_send_timeout 600s;
     }
 }
-```
 
-### 性能优化配置（nginx 直接 serve 图片，仅适用于全 public 图片场景）
-
-```nginx
+# ---- HTTP → HTTPS 重定向 ----
 server {
-    listen 443 ssl http2;
-    server_name your-domain.com;
-
-    client_max_body_size 50m;
-
-    # 图片 —— nginx 直接 serve，卸载 Go 压力
-    location /images/ {
-        alias /app/data/images/;
-        expires 7d;
-        add_header Cache-Control "public, max-age=604800";
-        add_header Access-Control-Allow-Origin "*";
-    }
-
-    location /image-thumbnails/ {
-        alias /app/data/image_thumbnails/;
-        expires 1y;
-        add_header Cache-Control "public, max-age=31536000, immutable";
-        add_header Access-Control-Allow-Origin "*";
-    }
-
-    location /image-references/ {
-        alias /app/data/images/;
-        expires 7d;
-        add_header Cache-Control "public, max-age=604800";
-    }
-
-    # 其余请求走 Go
-    location / {
-        proxy_pass http://127.0.0.1:8822;
-        proxy_http_version 1.1;
-        proxy_buffering off;
-        proxy_cache off;
-        chunked_transfer_encoding on;
-
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        proxy_read_timeout 600s;
-        proxy_send_timeout 600s;
-    }
+    listen 80;
+    server_name your-domain.com;  # ← 替换为你的域名
+    return 301 https://$host$request_uri;
 }
 ```
 
@@ -230,7 +353,11 @@ server {
 | `proxy_buffering off` | **必须** | `/v1/chat/completions` 和生图接口使用 SSE 流式输出，nginx 缓冲会导致客户端收不到实时数据 |
 | `proxy_read_timeout` | **必须** | 生图默认 300s 超时（可配置 `CHATGPT2API_IMAGE_TASK_TIMEOUT_SECONDS`），nginx 超时必须大于该值 |
 | `client_max_body_size` | 建议 | 生图编辑（`/v1/images/edits`）会上传参考图，需要足够大 |
+| `limit_req_zone` | 建议 | 登录接口 3 次/分钟，防暴力破解 |
+| IP 白名单 | 建议 | `/auth/login` 和 `/api/admin/` 仅允许你的 IP 访问 |
 | SSL | 建议 | 生产环境务必配置 HTTPS，可使用 Let's Encrypt + certbot |
+
+> 更多安全加固措施（fail2ban、防火墙、SSH 加固等）详见 [安全加固指南](security-hardening-guide.md)。
 
 ---
 
