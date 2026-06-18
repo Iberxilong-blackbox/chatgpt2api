@@ -3,11 +3,13 @@
 # 一键构建 + 更新部署脚本
 # 在服务器上 git pull 之后运行：
 #
-#   sudo ./deploy/update.sh       # 构建前端 → 编译后端 → 更新部署
-#   sudo ./deploy/update.sh --env # 仅更新 .env，重启服务，跳过构建
+#   sudo ./deploy/update.sh                # 构建前端 → 编译后端 → 更新部署
+#   sudo ./deploy/update.sh --env          # 仅更新 .env，重启服务，跳过构建
+#   sudo ./deploy/update.sh --sync-ac # 同步 data/auto_import/ 的账号 JSON 到部署目录并重启
 #
 # 选项:
-#   --env   仅更新 .env 配置文件并重启服务，不做构建编译
+#   --env            仅更新 .env 配置文件并重启服务，不做构建编译
+#   --sync-ac  将项目 data/auto_import/ 下的 .json 文件同步到 /opt/chatgpt2api/data/auto_import/ 并重启服务
 
 set -euo pipefail
 
@@ -81,6 +83,57 @@ if [ "${1:-}" = "--env" ]; then
         exit 1
     fi
 
+    echo ""
+    echo "========== 实时日志（Ctrl+C 退出） =========="
+    journalctl -u "$SERVICE_NAME" -n 20 -f
+    exit 0
+fi
+
+# ============================================================
+# 模式判断：--sync-ac = 同步账号 JSON 并重启
+# ============================================================
+if [ "${1:-}" = "--sync-ac" ]; then
+    log_info "模式: 同步账号 JSON（跳过构建编译）"
+
+    SRC_DIR="${PROJECT_DIR}/data/auto_import"
+    DST_DIR="${INSTALL_DIR}/data/auto_import"
+
+    if [ ! -d "$SRC_DIR" ]; then
+        log_error "源目录不存在: ${SRC_DIR}"
+        exit 1
+    fi
+
+    # 统计待同步的 .json 文件（排除 imported 子目录）
+    json_count=$(find "$SRC_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | wc -l)
+    if [ "$json_count" -eq 0 ]; then
+        log_warn "${SRC_DIR} 下没有 .json 文件，无需同步"
+        exit 0
+    fi
+
+    log_info "发现 ${json_count} 个账号 JSON 文件"
+
+    # 确保目标目录存在
+    mkdir -p "$DST_DIR"
+
+    # 复制 .json 文件（仅第一层，不复制 imported 子目录）
+    cp "$SRC_DIR"/*.json "$DST_DIR"/
+    chown -R "${APP_NAME}:${APP_NAME}" "$DST_DIR"
+    chmod 640 "$DST_DIR"/*.json 2>/dev/null || true
+    log_info "已同步 ${json_count} 个文件到 ${DST_DIR}"
+
+    # 重启服务触发导入
+    log_info "重启服务 ${SERVICE_NAME}..."
+    systemctl restart "$SERVICE_NAME"
+    sleep 1
+
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log_info "服务运行正常，账号 JSON 将在启动时自动导入"
+    else
+        log_error "服务启动失败，查看日志: journalctl -u ${SERVICE_NAME} -n 50"
+        exit 1
+    fi
+
+    # 查看导入日志
     echo ""
     echo "========== 实时日志（Ctrl+C 退出） =========="
     journalctl -u "$SERVICE_NAME" -n 20 -f
