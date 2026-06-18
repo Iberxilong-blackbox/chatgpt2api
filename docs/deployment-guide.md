@@ -263,6 +263,9 @@ sudo systemctl reload chatgpt2api
 在服务器上拉取最新代码后，使用一键脚本完成构建 + 部署：
 
 ```bash
+# 首次使用前，给脚本加上执行权限
+chmod +x deploy/update.sh
+
 # 拉取最新代码
 git pull
 

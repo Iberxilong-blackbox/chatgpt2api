@@ -35,6 +35,15 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_DIR"
 log_info "项目目录: ${PROJECT_DIR}"
 
+# 补充 PATH：sudo 环境下可能不包含 bun、go 等用户安装的命令
+export PATH="$HOME/.bun/bin:$HOME/.local/bin:/usr/local/go/bin:$PATH"
+# 如果 bun 或 go 仍找不到，尝试从用户 shell profile 中加载 PATH
+if ! command -v bun &>/dev/null || ! command -v go &>/dev/null; then
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        [ -f "$rc" ] && source "$rc" 2>/dev/null || true
+    done
+fi
+
 # ============================================================
 # 模式判断：--env 模式 = 仅更新配置，跳过构建
 # ============================================================
