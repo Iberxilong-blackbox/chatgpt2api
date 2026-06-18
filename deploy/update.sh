@@ -26,7 +26,7 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # 检查是否以 root 运行
-if [ "$(id -u)${SUDO_UID:-}" -ne 0 ]; then
+if [ "$(id -u)" -ne 0 ]; then
     log_error "请以 root 或通过 sudo 运行此脚本"
     exit 1
 fi
