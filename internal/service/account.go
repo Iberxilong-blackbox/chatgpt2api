@@ -2188,6 +2188,29 @@ func summarizeRefreshErrorValue(value any) string {
 	return ""
 }
 
+// shouldSkipImport checks whether the account record has is-ban or phone_invalid set to true.
+func shouldSkipImport(record map[string]any) bool {
+	for _, key := range []string{"is-ban", "phone_invalid"} {
+		if truthy(record[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func truthy(v any) bool {
+	switch val := v.(type) {
+	case bool:
+		return val
+	case string:
+		return val == "true" || val == "1"
+	case float64:
+		return val != 0
+	default:
+		return false
+	}
+}
+
 // SetImportDir configures the directory scanned by ImportScanDir.
 func (s *AccountService) SetImportDir(dir string) {
 	s.importDir = dir
@@ -2243,6 +2266,9 @@ func (s *AccountService) ImportAccountJSONFiles(dir string) (int, map[string]str
 		// accept both access_token (CPA) and accessToken
 		if util.Clean(record["access_token"]) == "" && util.Clean(record["accessToken"]) == "" {
 			errors[name] = "missing access_token"
+			continue
+		}
+		if shouldSkipImport(record) {
 			continue
 		}
 		files = append(files, fileRecord{path: fullPath, record: record})
