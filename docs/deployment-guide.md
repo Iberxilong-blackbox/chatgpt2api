@@ -260,23 +260,17 @@ sudo systemctl reload chatgpt2api
 
 #### 4. 更新部署
 
+在服务器上拉取最新代码后，使用一键脚本完成构建 + 部署：
+
 ```bash
-# 停止服务
-sudo systemctl stop chatgpt2api
+# 拉取最新代码
+git pull
 
-# 替换二进制文件
-sudo cp chatgpt2api /opt/chatgpt2api/chatgpt2api
-sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/chatgpt2api
+# 方案 A：代码有变更 —— 重新构建前端 + 编译后端 + 更新部署
+sudo ./deploy/update.sh
 
-# 如果 .env 有变更
-sudo cp .env /opt/chatgpt2api/.env
-sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/.env
-
-# 启动服务
-sudo systemctl start chatgpt2api
-
-# 确认运行正常
-sudo journalctl -u chatgpt2api -f
+# 方案 B：仅改动了 .env —— 直接更新配置并重启，跳过构建编译（省时）
+sudo ./deploy/update.sh --env
 ```
 
 > 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离，进一步提升了运行安全性。
