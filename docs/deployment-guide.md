@@ -35,6 +35,15 @@ SQL
 
 > 建议使用 `127.0.0.1` 而非 `localhost` 连接，避免 Unix socket 认证问题。
 
+安装完成后确认 PG 实例的实际服务名（不同版本名称不同）：
+
+```bash
+sudo systemctl list-units --all | grep postgres
+# 输出示例：postgresql@16-main.service、postgresql@12-main.service 等
+```
+
+记下运行中的实例名，后续 `chatgpt2api.service` 的 `After=` 需要改成该名称，确保 systemd 按正确顺序启动。
+
 然后在 `.env` 中配置：
 
 ```
@@ -198,7 +207,17 @@ sudo chmod 640 /opt/chatgpt2api/.env
 
 #### 2. 注册 systemd 服务
 
-项目中已提供 `deploy/chatgpt2api.service`：
+项目中已提供 `deploy/chatgpt2api.service`。如果使用 PostgreSQL，需要先修改 `After=` 中的实例名：
+
+```bash
+# 查看 PG 实例的实际服务名
+sudo systemctl list-units --all | grep postgres
+
+# 编辑服务文件，将 After= 那行的 postgresql@版本-main.service 改为实际名称
+# 例如：After=network.target postgresql@16-main.service
+```
+
+然后注册服务：
 
 ```bash
 # 复制服务文件

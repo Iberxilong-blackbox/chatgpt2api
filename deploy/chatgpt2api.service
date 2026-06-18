@@ -1,6 +1,6 @@
 [Unit]
 Description=chatgpt2api service
-After=network.target postgresql.service mysql.service
+After=network.target postgresql@12-main.service mysql.service
 Wants=network.target
 
 [Service]
