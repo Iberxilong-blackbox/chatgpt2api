@@ -12,6 +12,9 @@ ExecStart=/opt/chatgpt2api/chatgpt2api
 Restart=on-failure
 RestartSec=5s
 
+# 将 HOME 指向应用目录，避免 ProtectHome=yes 导致 PostgreSQL 驱动读取 ~/.postgresql 时报权限错误
+Environment=HOME=/opt/chatgpt2api
+
 # 安全加固
 NoNewPrivileges=yes
 PrivateTmp=yes

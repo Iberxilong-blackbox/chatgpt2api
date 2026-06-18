@@ -121,25 +121,50 @@ docker pull zyphrzero/chatgpt2api:latest
 
 ```bash
 # 安装 Go（编译后端必需）
-# 方法一：使用 apt 安装（版本可能较旧）
+# 方法一：使用 apt 安装（版本可能较旧，不推荐）
 sudo apt update && sudo apt install golang-go -y
 
-# 方法二：从官网安装最新版
+# 方法二：从官网安装最新版（推荐）
 GO_VERSION=1.22.4
 wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
 sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz
-# 将 /usr/local/go/bin 加入 PATH（已追加到 ~/.bashrc 则无需重复）
-echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.bashrc
-source ~/.bashrc
-# 清理安装包
 rm go${GO_VERSION}.linux-amd64.tar.gz
-
-# 安装 Bun（JavaScript 运行时与包管理器，构建前端必需）
-curl -fsSL https://bun.sh/install | bash
-# 重新加载 shell 或执行：source ~/.bashrc
 ```
 
-> 验证安装：`go version`、`bun --version`
+**bash 用户** —— 将 Go 加入 PATH：
+
+```bash
+echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.bashrc
+source ~/.bashrc
+```
+
+**zsh 用户** —— 将 Go 加入 PATH：
+
+```zsh
+echo 'export PATH=/usr/local/go/bin:$PATH' >> ~/.zshrc
+source ~/.zshrc
+```
+
+安装 Bun（JavaScript 运行时与包管理器，构建前端必需）：
+
+```bash
+# bash / zsh 通用 —— install 脚本固定用 bash 执行
+curl -fsSL https://bun.sh/install | bash
+```
+
+**bash 用户** —— 重新加载：
+
+```bash
+source ~/.bashrc
+```
+
+**zsh 用户** —— 重新加载：
+
+```zsh
+source ~/.zshrc
+```
+
+> 验证安装：`go version`（需 ≥ 1.21）、`bun --version`
 
 ### 构建
 

@@ -24,7 +24,10 @@ docker-compose-local.yml
 .codegraph/
 .claude/settings.local.json
 draft.md
-
+go1.22.4.linux-amd64.tar.gz.1
+go.mod
+chatgpt2api
+go.sum
 # Environment variables
 .env
 .env.local
