@@ -141,7 +141,7 @@ curl -fsSL https://bun.sh/install | bash
 
 > 验证安装：`go version`、`bun --version`
 
-### 构建与运行
+### 构建
 
 ```bash
 # 1. 构建前端
@@ -149,10 +149,93 @@ cd web && bun install && bun run build
 
 # 2. 构建后端（前端已嵌入）
 cd .. && go build -o chatgpt2api ./internal
-
-# 3. 运行
-./chatgpt2api
 ```
+
+### systemd 服务配置
+
+将应用注册为系统服务，开机自启并通过 systemctl 管理。
+
+#### 1. 创建专用用户和目录
+
+```bash
+# 创建低权限系统用户（不能登录 shell）
+sudo useradd -r -s /usr/sbin/nologin -M chatgpt2api
+
+# 创建应用目录并部署文件
+sudo mkdir -p /opt/chatgpt2api/data
+sudo cp chatgpt2api /opt/chatgpt2api/
+sudo cp .env /opt/chatgpt2api/
+
+# 赋权
+sudo chown -R chatgpt2api:chatgpt2api /opt/chatgpt2api
+sudo chmod 640 /opt/chatgpt2api/.env
+```
+
+#### 2. 注册 systemd 服务
+
+项目中已提供 `deploy/chatgpt2api.service`：
+
+```bash
+# 复制服务文件
+sudo cp deploy/chatgpt2api.service /etc/systemd/system/
+
+# 重新加载 systemd 配置
+sudo systemctl daemon-reload
+
+# 启动服务
+sudo systemctl start chatgpt2api
+
+# 设置开机自启
+sudo systemctl enable chatgpt2api
+
+# 查看状态
+sudo systemctl status chatgpt2api
+```
+
+#### 3. 日常管理命令
+
+```bash
+# 查看实时日志
+sudo journalctl -u chatgpt2api -f
+
+# 查看最近 100 行日志
+sudo journalctl -u chatgpt2api -n 100
+
+# 查看今天的日志
+sudo journalctl -u chatgpt2api --since today
+
+# 重启服务（如更新 .env 后）
+sudo systemctl restart chatgpt2api
+
+# 停止服务
+sudo systemctl stop chatgpt2api
+
+# 重载配置（不中断服务）
+sudo systemctl reload chatgpt2api
+```
+
+#### 4. 更新部署
+
+```bash
+# 停止服务
+sudo systemctl stop chatgpt2api
+
+# 替换二进制文件
+sudo cp chatgpt2api /opt/chatgpt2api/chatgpt2api
+sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/chatgpt2api
+
+# 如果 .env 有变更
+sudo cp .env /opt/chatgpt2api/.env
+sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/.env
+
+# 启动服务
+sudo systemctl start chatgpt2api
+
+# 确认运行正常
+sudo journalctl -u chatgpt2api -f
+```
+
+> 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离，进一步提升了运行安全性。
 
 ---
 
@@ -270,12 +353,8 @@ server {
 
     # 登录接口：频率限制 + IP 白名单
     location /auth/login {
-        # IP 白名单（替换为你的 IP）
-        allow 1.2.3.4;    # ← 替换为你的家庭/办公 IP
-        # allow 5.6.7.8;  # ← 备用 IP
-        deny all;
 
-        limit_req zone=login_limit burst=3 nodelay;
+        limit_req zone=login_limit burst=5 nodelay;
 
         proxy_pass http://127.0.0.1:8822;
         proxy_http_version 1.1;

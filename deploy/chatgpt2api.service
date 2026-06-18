@@ -1,0 +1,29 @@
+[Unit]
+Description=chatgpt2api service
+After=network.target postgresql.service mysql.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=chatgpt2api
+Group=chatgpt2api
+WorkingDirectory=/opt/chatgpt2api
+ExecStart=/opt/chatgpt2api/chatgpt2api
+Restart=on-failure
+RestartSec=5s
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/chatgpt2api/data
+ReadOnlyPaths=/opt/chatgpt2api/.env
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chatgpt2api
+
+[Install]
+WantedBy=multi-user.target
