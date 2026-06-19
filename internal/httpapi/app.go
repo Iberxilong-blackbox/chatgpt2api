@@ -59,6 +59,7 @@ type App struct {
 	register   *service.RegisterService
 	update     *service.UpdateService
 	cancel     context.CancelFunc
+	loginLimit *loginRateLimiter
 }
 
 func NewApp() (*App, error) {
@@ -112,7 +113,7 @@ func NewApp() (*App, error) {
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	imageSessions := service.NewImageConversationSessionService(filepath.Join(cfg.DataDir, "image_conversation_sessions.json"), storageBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger, ImageConversationSessions: imageSessions}
-	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel}
+	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel, loginLimit: newLoginRateLimiter(8, 15*time.Minute)}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(accounts, storageBackend)
@@ -446,10 +447,21 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	identity, token, err := a.auth.LoginPassword(util.Clean(body["username"]), util.Clean(body["password"]))
+	username := util.Clean(body["username"])
+	if a.loginLimit != nil && !a.loginLimit.Allow(loginRateLimitKey(r, username), time.Now()) {
+		util.WriteError(w, http.StatusTooManyRequests, "too many login attempts, try again later")
+		return
+	}
+	identity, token, err := a.auth.LoginPassword(username, util.Clean(body["password"]))
 	if err != nil {
+		if a.loginLimit != nil {
+			a.loginLimit.RecordFailure(loginRateLimitKey(r, username), time.Now())
+		}
 		util.WriteError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if a.loginLimit != nil {
+		a.loginLimit.Reset(loginRateLimitKey(r, username))
 	}
 	setAuthSessionCookie(w, r, token)
 	a.writeLoginResponse(w, *identity, token)

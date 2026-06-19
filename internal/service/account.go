@@ -38,22 +38,22 @@ type AccountConfig interface {
 }
 
 type AccountService struct {
-	mu                sync.Mutex
-	storage           storage.Backend
-	config            AccountConfig
-	proxy             *ProxyService
-	logs              *LogService
-	index             int
-	items             []map[string]any
-	imageReservations map[string]int
-	remoteBaseURL     string
-	browserHTTPClient func(profile string, timeout time.Duration) *http.Client
-	textRequestCount  map[string]int
-	textCooldownUntil time.Time
-	refresher           *SessionRefresher
-	warmingWorker       WarmingRunner
-	importDir           string
-	lastRefreshAttempt  map[string]time.Time
+	mu                 sync.Mutex
+	storage            storage.Backend
+	config             AccountConfig
+	proxy              *ProxyService
+	logs               *LogService
+	index              int
+	items              []map[string]any
+	imageReservations  map[string]int
+	remoteBaseURL      string
+	browserHTTPClient  func(profile string, timeout time.Duration) *http.Client
+	textRequestCount   map[string]int
+	textCooldownUntil  time.Time
+	refresher          *SessionRefresher
+	warmingWorker      WarmingRunner
+	importDir          string
+	lastRefreshAttempt map[string]time.Time
 }
 
 const (
@@ -70,13 +70,13 @@ func NewAccountService(backend storage.Backend, config AccountConfig, proxy *Pro
 		return proxy.BrowserHTTPClientWithProfile(profile, timeout)
 	}
 	s := &AccountService{
-		storage:           backend,
-		config:            config,
-		proxy:             proxy,
-		logs:              logs,
-		imageReservations: map[string]int{},
-		remoteBaseURL:     "https://chatgpt.com",
-		browserHTTPClient: browserHTTPClient,
+		storage:            backend,
+		config:             config,
+		proxy:              proxy,
+		logs:               logs,
+		imageReservations:  map[string]int{},
+		remoteBaseURL:      "https://chatgpt.com",
+		browserHTTPClient:  browserHTTPClient,
 		textRequestCount:   map[string]int{},
 		lastRefreshAttempt: map[string]time.Time{},
 	}
@@ -237,13 +237,12 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 				updates[key] = val
 			}
 		}
-		// session_token can appear in different formats across JSON sources:
-		// snake_case (session_token), camelCase (sessionToken), or nested
-		// inside session_raw/session objects. Check each until found.
+		// Prefer nested session JSON because top-level exports can contain stale
+		// or empty compatibility fields alongside the live session payload.
 		if current["session_token"] == nil {
-			st := util.Clean(record["session_token"])
-			if st == "" {
-				st = util.Clean(record["sessionToken"])
+			st := ""
+			if sess, ok := record["session"].(map[string]any); ok {
+				st = util.Clean(sess["sessionToken"])
 			}
 			if st == "" {
 				if raw, ok := record["session_raw"].(map[string]any); ok {
@@ -251,9 +250,10 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 				}
 			}
 			if st == "" {
-				if sess, ok := record["session"].(map[string]any); ok {
-					st = util.Clean(sess["sessionToken"])
-				}
+				st = util.Clean(record["sessionToken"])
+			}
+			if st == "" {
+				st = util.Clean(record["session_token"])
 			}
 			if st != "" {
 				updates["session_token"] = st
@@ -1787,25 +1787,25 @@ func publicAccounts(accounts []map[string]any) []map[string]any {
 			continue
 		}
 		out = append(out, map[string]any{
-			"id":                 accountIDFromToken(token),
-			"token_preview":      util.AnonymizeToken(token),
-			"access_token":       token,
-			"type":               util.ValueOr(account["type"], "Free"),
-			"status":             util.ValueOr(account["status"], "正常"),
-			"quota":              util.ValueOr(account["quota"], 0),
-			"imageQuotaUnknown":  util.ToBool(account["image_quota_unknown"]),
-			"email":              account["email"],
-			"user_id":            account["user_id"],
-			"chatgpt_account_id": account["chatgpt_account_id"],
-			"limits_progress":    util.ValueOr(account["limits_progress"], []any{}),
-			"default_model_slug": account["default_model_slug"],
-			"restoreAt":          account["restore_at"],
-			"success":            util.ToInt(account["success"], 0),
-			"fail":               util.ToInt(account["fail"], 0),
-			"lastUsedAt":         account["last_used_at"],
-			"warmingStatus":      util.ValueOr(account["warming_status"], nil),
-			"warmingDay":         util.ToInt(account["warming_day"], 0),
-			"warmingErrors":      util.ToInt(account["warming_errors"], 0),
+			"id":                  accountIDFromToken(token),
+			"token_preview":       util.AnonymizeToken(token),
+			"access_token":        token,
+			"type":                util.ValueOr(account["type"], "Free"),
+			"status":              util.ValueOr(account["status"], "正常"),
+			"quota":               util.ValueOr(account["quota"], 0),
+			"imageQuotaUnknown":   util.ToBool(account["image_quota_unknown"]),
+			"email":               account["email"],
+			"user_id":             account["user_id"],
+			"chatgpt_account_id":  account["chatgpt_account_id"],
+			"limits_progress":     util.ValueOr(account["limits_progress"], []any{}),
+			"default_model_slug":  account["default_model_slug"],
+			"restoreAt":           account["restore_at"],
+			"success":             util.ToInt(account["success"], 0),
+			"fail":                util.ToInt(account["fail"], 0),
+			"lastUsedAt":          account["last_used_at"],
+			"warmingStatus":       util.ValueOr(account["warming_status"], nil),
+			"warmingDay":          util.ToInt(account["warming_day"], 0),
+			"warmingErrors":       util.ToInt(account["warming_errors"], 0),
 			"warmingLastActionAt": account["warming_last_action_at"],
 		})
 	}
@@ -2190,7 +2190,7 @@ func summarizeRefreshErrorValue(value any) string {
 
 // shouldSkipImport checks whether the account record has is-ban or phone_invalid set to true.
 func shouldSkipImport(record map[string]any) bool {
-	for _, key := range []string{"is-ban", "phone_invalid"} {
+	for _, key := range []string{"is-ban", "phone_invalid", "password_invalid"} {
 		if truthy(record[key]) {
 			return true
 		}

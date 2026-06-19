@@ -159,6 +159,20 @@ func TestSanitizeLogValueMasksSessionCredentials(t *testing.T) {
 	}
 }
 
+func TestSanitizeLogValueMasksSecretsInsideText(t *testing.T) {
+	text := `request failed: Authorization Bearer sk-secret-token-value-123456 and access_token="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret"`
+	sanitized, ok := SanitizeLogValue(text).(string)
+	if !ok {
+		t.Fatalf("SanitizeLogValue(text) = %#v", sanitized)
+	}
+	if strings.Contains(sanitized, "sk-secret-token-value-123456") || strings.Contains(sanitized, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret") {
+		t.Fatalf("sanitized text leaked secret: %q", sanitized)
+	}
+	if !strings.Contains(sanitized, "Bearer ...") || !strings.Contains(sanitized, `access_token="...`) {
+		t.Fatalf("sanitized text did not preserve useful context: %q", sanitized)
+	}
+}
+
 func TestLogServiceUserUsageStatsForUsersFiltersResults(t *testing.T) {
 	logs := NewLogService(newTestStorageBackend(t))
 

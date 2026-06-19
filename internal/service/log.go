@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +37,11 @@ type cachedUserUsageStats struct {
 }
 
 const userUsageStatsCacheTTL = 15 * time.Second
+
+var (
+	bearerTokenTextRE    = regexp.MustCompile(`(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{16,}`)
+	sensitiveTokenTextRE = regexp.MustCompile(`(?i)((?:access_token|refresh_token|session_token|api_key|authorization)["'=:\s]+)[^",\s}]{16,}`)
+)
 
 type LogQuery struct {
 	Username      string
@@ -93,6 +99,9 @@ func NewLogService(backend ...storage.Backend) *LogService {
 func (s *LogService) Add(summary string, detail map[string]any) error {
 	if detail == nil {
 		detail = map[string]any{}
+	}
+	if sanitized, ok := SanitizeLogValue(detail).(map[string]any); ok {
+		detail = sanitized
 	}
 	item := map[string]any{
 		"time":    util.NowLocal(),
@@ -809,7 +818,7 @@ func SanitizeLogValue(v any) any {
 		if strings.HasPrefix(strings.TrimSpace(x), "data:") && strings.Contains(x, ";base64,") {
 			return maskBase64(x)
 		}
-		return x
+		return sanitizeLogText(x)
 	default:
 		return v
 	}
@@ -856,4 +865,10 @@ func maskBase64(value string) string {
 		return value[:idx+1] + maskString(value[idx+1:], 24)
 	}
 	return maskString(value, 24)
+}
+
+func sanitizeLogText(value string) string {
+	value = bearerTokenTextRE.ReplaceAllString(value, `${1}...`)
+	value = sensitiveTokenTextRE.ReplaceAllString(value, `${1}...`)
+	return value
 }

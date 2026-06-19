@@ -123,6 +123,30 @@ func TestAddAccountRecordsUsesImportedPlanType(t *testing.T) {
 	}
 }
 
+func TestAddAccountRecordsPrefersNestedSessionToken(t *testing.T) {
+	accounts := newTestAccountService(t)
+
+	result := accounts.AddAccountRecords([]map[string]any{{
+		"access_token":  "token-1",
+		"session_token": "top-snake-session",
+		"sessionToken":  "top-camel-session",
+		"session_raw": map[string]any{
+			"sessionToken": "raw-session",
+		},
+		"session": map[string]any{
+			"sessionToken": "nested-session",
+		},
+	}})
+
+	if result["added"] != 1 {
+		t.Fatalf("added = %#v, want 1", result["added"])
+	}
+	account := accounts.GetAccount("token-1")
+	if account["session_token"] != "nested-session" {
+		t.Fatalf("session_token = %#v, want nested-session", account["session_token"])
+	}
+}
+
 func TestDetectAccountTypePreservesExistingImportedType(t *testing.T) {
 	accounts := newTestAccountService(t)
 	accounts.AddAccountRecords([]map[string]any{{"access_token": "token-1", "plan_type": "plus"}})

@@ -339,6 +339,30 @@ func TestPasswordAccountLoginAndRegistrationToggle(t *testing.T) {
 	assertCreationConcurrentLimit(t, session, 2)
 }
 
+func TestPasswordLoginRateLimitBlocksRepeatedFailures(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+	app.loginLimit = newLoginRateLimiter(2, time.Hour)
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"wrong-password"}`))
+		req.RemoteAddr = "203.0.113.20:1234"
+		res := httptest.NewRecorder()
+		app.Handler().ServeHTTP(res, req)
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("failed login %d status = %d body = %s", i+1, res.Code, res.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"username":"admin","password":"AdminPass123!"}`))
+	req.RemoteAddr = "203.0.113.20:1234"
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusTooManyRequests {
+		t.Fatalf("rate-limited login status = %d body = %s", res.Code, res.Body.String())
+	}
+}
+
 func TestProfileAccountNameAndPasswordUpdates(t *testing.T) {
 	t.Setenv("CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT", "3")
 
