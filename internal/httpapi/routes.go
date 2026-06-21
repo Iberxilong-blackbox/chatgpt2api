@@ -1293,8 +1293,11 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			"errors": errors,
 		})
 	case r.URL.Path == "/api/accounts/warming/start" && r.Method == http.MethodPost:
-		a.accounts.StartWarming()
-		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})
+		refresh := a.accounts.StartWarming(r.Context())
+		if refresh != nil {
+			a.redactAccountPayloadForIdentity(identity, refresh)
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus(), "refresh": refresh})
 	case r.URL.Path == "/api/accounts/warming/stop" && r.Method == http.MethodPost:
 		a.accounts.StopWarming()
 		util.WriteJSON(w, http.StatusOK, map[string]any{"status": a.accounts.WarmingStatus()})

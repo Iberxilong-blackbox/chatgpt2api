@@ -952,6 +952,36 @@ func TestStartLimitedWatcherSkipsAccountBeforeRestoreTime(t *testing.T) {
 	}
 }
 
+func TestListRefreshableWarmingTokensOnlyIncludesDueWarmingAccounts(t *testing.T) {
+	accounts := newTestAccountService(t)
+	now := time.Now().UTC()
+	accounts.AddAccounts([]string{"warming-due", "warming-expired", "warming-future", "normal-due"})
+	accounts.UpdateAccount("warming-due", map[string]any{
+		"warming_status": "warming",
+		"status":         "限流",
+		"restore_at":     now.Add(-time.Minute).Format(time.RFC3339),
+	})
+	accounts.UpdateAccount("warming-expired", map[string]any{
+		"warming_status": "warming",
+		"status":         "过期待刷新",
+	})
+	accounts.UpdateAccount("warming-future", map[string]any{
+		"warming_status": "warming",
+		"status":         "限流",
+		"restore_at":     now.Add(time.Hour).Format(time.RFC3339),
+	})
+	accounts.UpdateAccount("normal-due", map[string]any{
+		"status":     "限流",
+		"restore_at": now.Add(-time.Minute).Format(time.RFC3339),
+	})
+
+	got := accounts.listRefreshableWarmingTokens(now)
+	want := []string{"warming-due", "warming-expired"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listRefreshableWarmingTokens() = %#v, want %#v", got, want)
+	}
+}
+
 func TestSummarizeRefreshErrorBodyPrefersJSONMessage(t *testing.T) {
 	got := summarizeRefreshErrorBody([]byte(`{"error":{"message":"You've reached the image generation limit"}}`))
 	if got != "body=You've reached the image generation limit" {

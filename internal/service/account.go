@@ -183,6 +183,26 @@ func (s *AccountService) listRefreshableLimitedTokens(now time.Time) []string {
 	return out
 }
 
+func (s *AccountService) listRefreshableWarmingTokens(now time.Time) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, item := range s.items {
+		if !isWarmingAccount(item) {
+			continue
+		}
+		if util.Clean(item["status"]) != "过期待刷新" {
+			if restoreAt, ok := parseAccountRestoreAt(item["restore_at"]); !ok || restoreAt.After(now) {
+				continue
+			}
+		}
+		if token := util.Clean(item["access_token"]); token != "" {
+			out = append(out, token)
+		}
+	}
+	return out
+}
+
 func (s *AccountService) AddAccounts(tokens []string) map[string]any {
 	records := make([]map[string]any, 0, len(tokens))
 	for _, token := range tokens {
@@ -1624,12 +1644,21 @@ func (s *AccountService) SetWarmingRunner(runner WarmingRunner) {
 	s.warmingWorker = runner
 }
 
-// StartWarming begins a warming cycle. It is a no-op if warming is already
-// running or if InitWarming has not been called.
-func (s *AccountService) StartWarming() {
-	if s.warmingWorker != nil {
-		s.warmingWorker.Start()
+// StartWarming refreshes due warming accounts, then begins a warming cycle. It
+// is a no-op if warming is already running or if InitWarming has not been called.
+func (s *AccountService) StartWarming(ctx context.Context) map[string]any {
+	if s.warmingWorker == nil {
+		return nil
 	}
+	if s.warmingWorker.Status().Running {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	refresh := s.RefreshAccounts(ctx, s.listRefreshableWarmingTokens(time.Now()))
+	s.warmingWorker.Start()
+	return refresh
 }
 
 // StopWarming cancels the current warming cycle.
