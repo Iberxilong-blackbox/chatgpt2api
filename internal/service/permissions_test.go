@@ -37,6 +37,9 @@ func TestAccountPoolPermissionsAreExplicit(t *testing.T) {
 		APIPermissionKey("POST", "/api/accounts/session"),
 		APIPermissionKey("POST", "/api/accounts/refresh"),
 		APIPermissionKey("POST", "/api/accounts/update"),
+		APIPermissionKey("GET", "/api/accounts/warming/status"),
+		APIPermissionKey("POST", "/api/accounts/warming/start"),
+		APIPermissionKey("POST", "/api/accounts/warming/stop"),
 		APIPermissionKey("DELETE", "/api/accounts"),
 	})}
 	for _, tc := range []struct {
@@ -48,6 +51,9 @@ func TestAccountPoolPermissionsAreExplicit(t *testing.T) {
 		{"POST", "/api/accounts/session"},
 		{"POST", "/api/accounts/refresh"},
 		{"POST", "/api/accounts/update"},
+		{"GET", "/api/accounts/warming/status"},
+		{"POST", "/api/accounts/warming/start"},
+		{"POST", "/api/accounts/warming/stop"},
 		{"DELETE", "/api/accounts"},
 	} {
 		if !HasAPIPermission(operators, tc.method, tc.path) {

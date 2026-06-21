@@ -183,6 +183,9 @@ cd web && bun install && bun run build
 
 # 2. 构建后端（前端已嵌入）
 cd .. && go build -o chatgpt2api ./internal
+
+# 3.本地
+./chatgpt2api
 ```
 
 ### systemd 服务配置

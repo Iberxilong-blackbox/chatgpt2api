@@ -201,6 +201,18 @@ type AccountMutationResponse = {
   duration_ms?: number;
 };
 
+export type WarmingStatus = {
+  running: boolean;
+  current_account?: string;
+  processed: number;
+  total: number;
+  last_error?: string;
+};
+
+type WarmingStatusResponse = {
+  status: WarmingStatus;
+};
+
 export type AccountRefreshResult = {
   account_id: string;
   access_token?: string;
@@ -870,6 +882,22 @@ export async function updateAccount(
       account_id: accountId,
       ...updates,
     },
+  });
+}
+
+export async function getWarmingStatus() {
+  return httpRequest<WarmingStatusResponse>("/api/accounts/warming/status");
+}
+
+export async function startWarming() {
+  return httpRequest<WarmingStatusResponse>("/api/accounts/warming/start", {
+    method: "POST",
+  });
+}
+
+export async function stopWarming() {
+  return httpRequest<WarmingStatusResponse>("/api/accounts/warming/stop", {
+    method: "POST",
   });
 }
 

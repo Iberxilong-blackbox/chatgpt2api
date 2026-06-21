@@ -11,10 +11,13 @@ import {
   CircleOff,
   Copy,
   Download,
+  Flame,
   LoaderCircle,
   Pencil,
+  Play,
   RefreshCw,
   Search,
+  Square,
   Trash2,
   UserRound,
   Stethoscope,
@@ -49,11 +52,15 @@ import {
   type DiagnoseResult,
   fetchAccountTokens,
   fetchAccounts,
+  getWarmingStatus,
   refreshAccounts,
+  startWarming,
+  stopWarming,
   updateAccount,
   type Account,
   type AccountStatus,
   type AccountType,
+  type WarmingStatus,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
@@ -80,6 +87,16 @@ const accountStatusOptions: { label: string; value: AccountStatus | "all" }[] = 
   { label: "刷新中", value: "刷新中" },
   { label: "过期待刷新", value: "过期待刷新" },
   { label: "禁用", value: "禁用" },
+];
+
+type WarmingFilter = "all" | "none" | "warming" | "done" | "failed";
+
+const warmingFilterOptions: { label: string; value: WarmingFilter }[] = [
+  { label: "全部养号", value: "all" },
+  { label: "未养号", value: "none" },
+  { label: "养号中", value: "warming" },
+  { label: "已养熟", value: "done" },
+  { label: "失败 >= 3", value: "failed" },
 ];
 
 const statusMeta: Record<
@@ -187,6 +204,33 @@ function formatRestoreAt(value?: string | null) {
   return { absolute, relative };
 }
 
+function isToday(value?: string | null) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function matchesWarmingFilter(account: Account, filter: WarmingFilter) {
+  switch (filter) {
+    case "none":
+      return !account.warmingStatus;
+    case "warming":
+      return account.warmingStatus === "warming";
+    case "done":
+      return account.warmingStatus === "done";
+    case "failed":
+      return (account.warmingErrors ?? 0) >= 3;
+    default:
+      return true;
+  }
+}
+
 function formatQuotaSummary(accounts: Account[]) {
   const availableAccounts = accounts.filter((account) => account.status === "正常");
   if (availableAccounts.some(isUnlimitedImageQuotaAccount)) {
@@ -254,11 +298,13 @@ function normalizeAccounts(items: Account[] | null | undefined): Account[] {
 
 function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const didLoadRef = useRef(false);
+  const warmingSnapshotRef = useRef({ running: false, processed: 0 });
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<AccountType | "all">("all");
   const [statusFilter, setStatusFilter] = useState<AccountStatus | "all">("all");
+  const [warmingFilter, setWarmingFilter] = useState<WarmingFilter>("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState("10");
   const [editingAccount, setEditingAccount] = useState<Account | null>(null);
@@ -271,8 +317,17 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isBulkUpdatingWarming, setIsBulkUpdatingWarming] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [isDiagnosing, setIsDiagnosing] = useState(false);
+  const [warmingStatus, setWarmingStatus] = useState<WarmingStatus>({
+    running: false,
+    processed: 0,
+    total: 0,
+  });
+  const [isWarmingStatusLoading, setIsWarmingStatusLoading] = useState(false);
+  const [isWarmingStarting, setIsWarmingStarting] = useState(false);
+  const [isWarmingStopping, setIsWarmingStopping] = useState(false);
   const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(null);
   const [diagnoseAccountId, setDiagnoseAccountId] = useState<string | null>(null);
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<string[]>([]);
@@ -284,6 +339,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const canUpdateAccount = hasAPIPermission(session, "POST", "/api/accounts/update");
   const canDeleteAccounts = hasAPIPermission(session, "DELETE", "/api/accounts");
   const canExportTokens = hasAPIPermission(session, "GET", "/api/accounts/tokens");
+  const canViewWarmingStatus = hasAPIPermission(session, "GET", "/api/accounts/warming/status");
+  const canStartWarming = hasAPIPermission(session, "POST", "/api/accounts/warming/start");
+  const canStopWarming = hasAPIPermission(session, "POST", "/api/accounts/warming/stop");
 
   const applyAccountItems = useCallback((items: Account[] | null | undefined) => {
     const nextAccounts = normalizeAccounts(items);
@@ -309,6 +367,38 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     }
   }, [applyAccountItems]);
 
+  const loadWarmingStatus = useCallback(async (silent = false) => {
+    if (!canViewWarmingStatus) {
+      return;
+    }
+    if (!silent) {
+      setIsWarmingStatusLoading(true);
+    }
+    try {
+      const data = await getWarmingStatus();
+      const previous = warmingSnapshotRef.current;
+      const shouldRefreshAccounts =
+        previous.processed !== data.status.processed || (previous.running && !data.status.running);
+      warmingSnapshotRef.current = {
+        running: data.status.running,
+        processed: data.status.processed,
+      };
+      setWarmingStatus(data.status);
+      if (shouldRefreshAccounts) {
+        void loadAccounts(true);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "加载养号状态失败";
+      if (!silent) {
+        toast.error(message);
+      }
+    } finally {
+      if (!silent) {
+        setIsWarmingStatusLoading(false);
+      }
+    }
+  }, [canViewWarmingStatus, loadAccounts]);
+
   useEffect(() => {
     if (didLoadRef.current) {
       return;
@@ -317,6 +407,20 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     void loadAccounts();
   }, [loadAccounts]);
 
+  useEffect(() => {
+    void loadWarmingStatus(true);
+  }, [loadWarmingStatus]);
+
+  useEffect(() => {
+    if (!canViewWarmingStatus || !warmingStatus.running) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadWarmingStatus(true);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [canViewWarmingStatus, loadWarmingStatus, warmingStatus.running]);
+
   const filteredAccounts = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return accounts.filter((account) => {
@@ -324,9 +428,10 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
         normalizedQuery.length === 0 || (account.email ?? "").toLowerCase().includes(normalizedQuery);
       const typeMatched = typeFilter === "all" || account.type === typeFilter;
       const statusMatched = statusFilter === "all" || account.status === statusFilter;
-      return searchMatched && typeMatched && statusMatched;
+      const warmingMatched = matchesWarmingFilter(account, warmingFilter);
+      return searchMatched && typeMatched && statusMatched && warmingMatched;
     });
-  }, [accounts, query, statusFilter, typeFilter]);
+  }, [accounts, query, statusFilter, typeFilter, warmingFilter]);
 
   const pageCount = Math.max(1, Math.ceil(filteredAccounts.length / Number(pageSize)));
   const safePage = Math.min(page, pageCount);
@@ -352,6 +457,11 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     const selectedSet = new Set(selectedIds);
     return accounts.filter((item) => selectedSet.has(item.id)).map((item) => item.id);
   }, [accounts, selectedIds]);
+
+  const selectedFilteredAccountIds = useMemo(() => {
+    const selectedSet = new Set(selectedIds);
+    return filteredAccounts.filter((item) => selectedSet.has(item.id)).map((item) => item.id);
+  }, [filteredAccounts, selectedIds]);
 
   const abnormalAccountIds = useMemo(() => {
     return accounts.filter((item) => item.status === "异常").map((item) => item.id);
@@ -507,6 +617,85 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     }
   };
 
+  const handleStartWarming = async () => {
+    if (!canStartWarming) {
+      toast.error("没有启动养号权限");
+      return;
+    }
+    setIsWarmingStarting(true);
+    try {
+      const data = await startWarming();
+      warmingSnapshotRef.current = {
+        running: data.status.running,
+        processed: data.status.processed,
+      };
+      setWarmingStatus(data.status);
+      toast.success("养号任务已启动");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "启动养号失败";
+      toast.error(message);
+    } finally {
+      setIsWarmingStarting(false);
+    }
+  };
+
+  const handleStopWarming = async () => {
+    if (!canStopWarming) {
+      toast.error("没有停止养号权限");
+      return;
+    }
+    setIsWarmingStopping(true);
+    try {
+      const data = await stopWarming();
+      warmingSnapshotRef.current = {
+        running: data.status.running,
+        processed: data.status.processed,
+      };
+      setWarmingStatus(data.status);
+      toast.success("已请求停止养号任务");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "停止养号失败";
+      toast.error(message);
+    } finally {
+      setIsWarmingStopping(false);
+    }
+  };
+
+  const handleBulkUpdateWarming = async (
+    accountIds: string[],
+    updates: { warming_status: string | null; warming_day?: number },
+    successLabel: string,
+  ) => {
+    if (!canUpdateAccount) {
+      toast.error("没有更新账号权限");
+      return;
+    }
+    const targetIds = Array.from(new Set(accountIds.map((id) => id.trim()).filter(Boolean)));
+    if (targetIds.length === 0) {
+      toast.error("请先选择当前筛选结果中的账号");
+      return;
+    }
+
+    setIsBulkUpdatingWarming(true);
+    try {
+      let latestItems: Account[] | null = null;
+      for (const accountId of targetIds) {
+        const data = await updateAccount(accountId, updates);
+        latestItems = data.items;
+      }
+      if (latestItems) {
+        applyAccountItems(latestItems);
+      }
+      setSelectedIds([]);
+      toast.success(`${successLabel} ${targetIds.length} 个账号`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "批量更新养号状态失败";
+      toast.error(message);
+    } finally {
+      setIsBulkUpdatingWarming(false);
+    }
+  };
+
   const toggleSelectAll = (checked: boolean) => {
     if (checked) {
       setSelectedIds((prev) => Array.from(new Set([...prev, ...currentRows.map((item) => item.id)])));
@@ -535,13 +724,20 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const renderWarmingBadge = (account: Account) => {
     if (!account.warmingStatus) return null;
     const errors = account.warmingErrors ?? 0;
-    let label = account.warmingStatus === "done" ? "已养熟" : `养号中 D${account.warmingDay ?? 0}`;
+    let label = account.warmingStatus === "done" ? `已养熟 D${account.warmingDay ?? 0}` : `养号中 D${account.warmingDay ?? 0}`;
     if (errors >= 3) label += ` (失败${errors}次)`;
     const variant = account.warmingStatus === "done" ? "info" : errors >= 3 ? "danger" : "warning";
     return (
-      <Badge variant={variant as "info" | "warning" | "danger"} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs">
-        {label}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-1">
+        <Badge variant={variant as "info" | "warning" | "danger"} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs">
+          {label}
+        </Badge>
+        {isToday(account.warmingLastActionAt) ? (
+          <Badge variant="secondary" className="rounded-md bg-stone-100 px-2 py-1 text-[11px] text-stone-600">
+            今日已跑
+          </Badge>
+        ) : null}
+      </div>
     );
   };
 
@@ -920,6 +1116,80 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
         </div>
       </section>
 
+      {canViewWarmingStatus ? (
+        <section className="mt-4">
+          <Card className="overflow-hidden rounded-[18px] bg-white/92 shadow-[0_8px_24px_rgba(24,40,72,0.06)]">
+            <CardContent className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-[12px] bg-amber-50 text-amber-700 ring-1 ring-amber-100">
+                  <Flame className="size-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold text-foreground">养号任务</h3>
+                    <Badge
+                      variant={warmingStatus.running ? "warning" : "secondary"}
+                      className="rounded-md px-2 py-1"
+                    >
+                      {warmingStatus.running ? "运行中" : "未运行"}
+                    </Badge>
+                    {warmingStatus.last_error ? (
+                      <Badge variant="danger" className="rounded-md px-2 py-1">
+                        最近错误
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <span>
+                      进度 {Math.max(0, warmingStatus.processed)} / {Math.max(0, warmingStatus.total)}
+                    </span>
+                    <span>当前 {warmingStatus.current_account || "—"}</span>
+                    {warmingStatus.last_error ? (
+                      <span className="max-w-[32rem] truncate text-rose-600">{warmingStatus.last_error}</span>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {canStartWarming ? (
+                  <Button
+                    type="button"
+                    className="h-9 rounded-lg bg-stone-950 px-3 text-white hover:bg-stone-800"
+                    onClick={() => void handleStartWarming()}
+                    disabled={warmingStatus.running || isWarmingStarting}
+                  >
+                    {isWarmingStarting ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
+                    开始养号
+                  </Button>
+                ) : null}
+                {canStopWarming ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 rounded-lg border-stone-200 bg-white px-3"
+                    onClick={() => void handleStopWarming()}
+                    disabled={!warmingStatus.running || isWarmingStopping}
+                  >
+                    {isWarmingStopping ? <LoaderCircle className="size-4 animate-spin" /> : <Square className="size-4" />}
+                    停止任务
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-9 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                  onClick={() => void loadWarmingStatus()}
+                  disabled={isWarmingStatusLoading}
+                >
+                  <RefreshCw className={cn("size-4", isWarmingStatusLoading ? "animate-spin" : "")} />
+                  刷新状态
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
+
       <section className="mt-6 flex flex-col gap-4">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-3">
@@ -929,7 +1199,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
             </Badge>
           </div>
 
-          <div className="grid gap-2 sm:grid-cols-[minmax(16rem,1fr)_10rem_10rem] lg:min-w-[38rem]">
+          <div className="grid gap-2 sm:grid-cols-[minmax(16rem,1fr)_10rem_10rem_10rem] lg:min-w-[49rem]">
             <div className="relative min-w-0">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-stone-400" />
               <Input
@@ -972,6 +1242,24 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
               </SelectTrigger>
               <SelectContent>
                 {accountStatusOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={warmingFilter}
+              onValueChange={(value) => {
+                setWarmingFilter(value as WarmingFilter);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="h-10 w-full rounded-lg">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {warmingFilterOptions.map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
                   </SelectItem>
@@ -1023,6 +1311,55 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                     刷新选中
                   </Button>
                 ) : null}
+                {canUpdateAccount ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      className="h-8 rounded-lg px-3 text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+                      onClick={() =>
+                        void handleBulkUpdateWarming(
+                          selectedFilteredAccountIds,
+                          { warming_status: "warming", warming_day: 0 },
+                          "已设为养号中",
+                        )
+                      }
+                      disabled={selectedFilteredAccountIds.length === 0 || isBulkUpdatingWarming}
+                    >
+                      {isBulkUpdatingWarming ? <LoaderCircle className="size-4 animate-spin" /> : <Flame className="size-4" />}
+                      设为养号中
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="h-8 rounded-lg px-3 text-sky-700 hover:bg-sky-50 hover:text-sky-800"
+                      onClick={() =>
+                        void handleBulkUpdateWarming(
+                          selectedFilteredAccountIds,
+                          { warming_status: "done" },
+                          "已设为已养熟",
+                        )
+                      }
+                      disabled={selectedFilteredAccountIds.length === 0 || isBulkUpdatingWarming}
+                    >
+                      {isBulkUpdatingWarming ? <LoaderCircle className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                      设为已养熟
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      className="h-8 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                      onClick={() =>
+                        void handleBulkUpdateWarming(
+                          selectedFilteredAccountIds,
+                          { warming_status: null },
+                          "已取消养号",
+                        )
+                      }
+                      disabled={selectedFilteredAccountIds.length === 0 || isBulkUpdatingWarming}
+                    >
+                      {isBulkUpdatingWarming ? <LoaderCircle className="size-4 animate-spin" /> : <CircleOff className="size-4" />}
+                      取消养号
+                    </Button>
+                  </>
+                ) : null}
                 {canDeleteAccounts ? (
                   <>
                     <Button
@@ -1047,7 +1384,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                 ) : null}
                 {selectedIds.length > 0 ? (
                   <span className="rounded-lg bg-[#edf4ff] px-2.5 py-1 text-xs font-medium text-[#1456f0]">
-                    已选择 {selectedIds.length} 项
+                    已选择 {selectedIds.length} 项，当前筛选 {selectedFilteredAccountIds.length} 项
                   </span>
                 ) : null}
               </div>
