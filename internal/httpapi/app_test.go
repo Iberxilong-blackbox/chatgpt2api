@@ -1814,6 +1814,27 @@ func TestUpdateAccountAllowsClearingWarmingStatus(t *testing.T) {
 	}
 }
 
+func TestWarmingWorkerCollectsRawWarmingAccounts(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	app.accounts.AddAccounts([]string{"warming-token", "normal-token", "done-today-token"})
+	app.accounts.UpdateAccount("warming-token", map[string]any{"warming_status": "warming", "warming_day": 2})
+	app.accounts.UpdateAccount("done-today-token", map[string]any{
+		"warming_status":         "warming",
+		"warming_last_action_at": time.Now().Format(time.RFC3339),
+	})
+
+	worker := &warmingWorker{svc: app.accounts}
+	items := worker.collectWarmingAccounts()
+	if len(items) != 1 {
+		t.Fatalf("collectWarmingAccounts() length = %d items = %#v", len(items), items)
+	}
+	if items[0]["access_token"] != "warming-token" || items[0]["warming_status"] != "warming" || items[0]["warming_day"] != 2 {
+		t.Fatalf("collected account = %#v, want raw warming account", items[0])
+	}
+}
+
 func TestRBACImageDeletePermissionAllowsDelegatedUser(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

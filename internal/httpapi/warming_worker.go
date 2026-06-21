@@ -115,9 +115,10 @@ func (w *warmingWorker) run(ctx context.Context) {
 // collectWarmingAccounts returns accounts with warming_status == "warming"
 // whose warming_last_action_at is not today.
 func (w *warmingWorker) collectWarmingAccounts() []map[string]any {
-	all := w.svc.ListAccounts()
-	out := make([]map[string]any, 0, len(all))
-	for _, item := range all {
+	tokens := w.svc.ListTokens()
+	out := make([]map[string]any, 0, len(tokens))
+	for _, token := range tokens {
+		item := w.svc.GetAccount(token)
 		if util.Clean(item["warming_status"]) != "warming" {
 			continue
 		}
