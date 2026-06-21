@@ -1778,6 +1778,42 @@ func TestRedactAccountPayloadCoversRefreshResults(t *testing.T) {
 	}
 }
 
+func TestUpdateAccountAllowsClearingWarmingStatus(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	app.accounts.AddAccounts([]string{"warming-token"})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/update", strings.NewReader(`{"access_token":"warming-token","warming_status":"warming","warming_day":2}`))
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("set warming status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/accounts/update", strings.NewReader(`{"access_token":"warming-token","warming_status":null}`))
+	req.Header.Set("Authorization", adminAuthHeader(t, app))
+	res = httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("clear warming status = %d body = %s", res.Code, res.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("clear warming json: %v", err)
+	}
+	item, _ := payload["item"].(map[string]any)
+	if item["warming_status"] != nil {
+		t.Fatalf("item warming_status = %#v, want nil", item["warming_status"])
+	}
+	items := logItems(payload)
+	if len(items) != 1 || items[0]["warmingStatus"] != nil {
+		t.Fatalf("items warmingStatus = %#v, want one cleared account", items)
+	}
+}
+
 func TestRBACImageDeletePermissionAllowsDelegatedUser(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

@@ -1264,7 +1264,7 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		}
 		updates := map[string]any{}
 		for _, key := range []string{"type", "status", "quota", "warming_status", "warming_day"} {
-			if value, ok := body[key]; ok && value != nil {
+			if value, ok := body[key]; ok && (value != nil || key == "warming_status") {
 				updates[key] = value
 			}
 		}
