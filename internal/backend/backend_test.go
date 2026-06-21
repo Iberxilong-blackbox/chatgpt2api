@@ -1582,6 +1582,46 @@ func TestSolveTurnstileTokenInterpretsEncodedProgram(t *testing.T) {
 	}
 }
 
+func TestRawProofAnswer(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"gAAAAABabc123~S", "abc123"},
+		{"gAAAAABhello~S", "hello"},
+		{"", ""},
+		{"no-prefix", "no-prefix"},
+		{"gAAAAABno-suffix", "gAAAAABno-suffix"},
+	}
+	for _, tt := range tests {
+		if got := rawProofAnswer(tt.input); got != tt.expected {
+			t.Errorf("rawProofAnswer(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestSolveSentinelDxTokenInterpretsEncodedProgram(t *testing.T) {
+	program := `[[3,"hello"]]`
+	key := "proof-answer-raw"
+	dx := base64.StdEncoding.EncodeToString([]byte(xorTurnstileString(program, key)))
+	// base64("hello") = "aGVsbG8="
+	if got := solveSentinelDxToken(dx, key); got != "aGVsbG8=" {
+		t.Fatalf("solveSentinelDxToken() = %q, want %q", got, "aGVsbG8=")
+	}
+}
+
+func TestSolveSentinelDxTokenEmptyKey(t *testing.T) {
+	if got := solveSentinelDxToken("", ""); got != "" {
+		t.Fatalf("solveSentinelDxToken with empty input = %q, want empty", got)
+	}
+}
+
+func TestSolveSentinelDxTokenInvalidBase64(t *testing.T) {
+	if got := solveSentinelDxToken("!!!not-valid-base64!!!", "key"); got != "" {
+		t.Fatalf("solveSentinelDxToken with invalid base64 = %q, want empty", got)
+	}
+}
+
 type errString string
 
 func (e errString) Error() string { return string(e) }

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -61,6 +62,7 @@ type ChatRequirements struct {
 	ProofToken     string
 	TurnstileToken string
 	SOToken        string
+	DxToken        string         // Sentinel dx VM result sent to server as "so" field
 	Raw            map[string]any
 }
 
@@ -441,7 +443,7 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	}
 
 	// Step 2: solve PoW + turnstile challenges
-	proofToken, turnstileToken, err := c.buildRequirements(preparePayload, p)
+	proofToken, turnstileToken, dxToken, err := c.buildRequirements(preparePayload, p)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
@@ -452,6 +454,9 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		"prepare_token": prepareToken,
 		"proofofwork":   proofToken,
 		"turnstile":     turnstileToken,
+	}
+	if dxToken != "" {
+		finalizePayload["so"] = dxToken
 	}
 	resp2, err := c.postJSON(ctx, finalizePath, finalizePayload, c.headers(finalizePath, map[string]string{"Content-Type": "application/json"}), false)
 	if err != nil {
@@ -473,18 +478,18 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		}
 		return ChatRequirements{}, fmt.Errorf("missing chat requirements token: %v", finalizePayload2)
 	}
-	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: util.Clean(finalizePayload2["so_token"]), Raw: finalizePayload2}, nil
+	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: util.Clean(finalizePayload2["so_token"]), DxToken: dxToken, Raw: finalizePayload2}, nil
 }
 
-func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken string, err error) {
+func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken, dxToken string, err error) {
 	if arkose := util.StringMap(data["arkose"]); util.ToBool(arkose["required"]) {
-		return "", "", fmt.Errorf("chat requirements requires arkose token, which is not implemented")
+		return "", "", "", fmt.Errorf("chat requirements requires arkose token, which is not implemented")
 	}
 	proof := util.StringMap(data["proofofwork"])
 	if util.ToBool(proof["required"]) {
 		token, err := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
 		if err != nil {
-			return "", "", err
+			return "", "", "", err
 		}
 		proofToken = token
 	}
@@ -492,7 +497,24 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	if util.ToBool(turnstile["required"]) && util.Clean(turnstile["dx"]) != "" {
 		turnstileToken = solveTurnstileToken(util.Clean(turnstile["dx"]), sourceP)
 	}
-	return proofToken, turnstileToken, nil
+
+	// Sentinel dx VM: process so.collector_dx using PoW proof answer as XOR key.
+	dxToken = ""
+	so := util.StringMap(data["so"])
+	if util.ToBool(so["required"]) {
+		if util.Clean(so["collector_dx"]) != "" {
+			rawKey := rawProofAnswer(proofToken)
+			if rawKey != "" {
+				dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), rawKey)
+			}
+		}
+		// Diagnostic logging — confirms whether OpenAI is sending dx challenges.
+		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, dxToken_produced=%v",
+			util.Clean(so["collector_dx"]) != "",
+			dxToken != "")
+	}
+
+	return proofToken, turnstileToken, dxToken, nil
 }
 
 func (c *Client) chatTarget() (string, string) {

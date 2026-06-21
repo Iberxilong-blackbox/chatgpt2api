@@ -5,11 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"regexp"
+	"strings"
 	"time"
-
-	"chatgpt2api/internal/util"
 )
 
 const defaultPOWScript = "https://chatgpt.com/backend-api/sentinel/sdk.js"
@@ -55,93 +55,99 @@ func buildProofToken(seed, difficulty, userAgent string, scriptSources []string,
 	if !solved {
 		return "", fmt.Errorf("failed to solve proof token: difficulty=%s", difficulty)
 	}
-	return "gAAAAAB" + answer, nil
+	return "gAAAAAB" + answer + "~S", nil
 }
 
 func buildPOWConfig(userAgent string, scriptSources []string, dataBuild string, timeOrigin float64) []any {
 	if len(scriptSources) == 0 {
 		scriptSources = []string{defaultPOWScript}
 	}
-	navigatorKeys := []string{
-		"registerProtocolHandler−function registerProtocolHandler() { [native code] }",
-		"storage−[object StorageManager]", "locks−[object LockManager]", "appCodeName−Mozilla",
-		"permissions−[object Permissions]", "share−function share() { [native code] }", "webdriver−false",
-		"managed−[object NavigatorManagedData]", "canShare−function canShare() { [native code] }",
-		"vendor−Google Inc.", "mediaDevices−[object MediaDevices]", "vibrate−function vibrate() { [native code] }",
-		"storageBuckets−[object StorageBucketManager]", "mediaCapabilities−[object MediaCapabilities]",
-		"cookieEnabled−true", "virtualKeyboard−[object VirtualKeyboard]", "product−Gecko",
-		"presentation−[object Presentation]", "onLine−true", "mimeTypes−[object MimeTypeArray]",
-		"credentials−[object CredentialsContainer]", "serviceWorker−[object ServiceWorkerContainer]",
-		"keyboard−[object Keyboard]", "gpu−[object GPU]", "doNotTrack", "serial−[object Serial]",
-		"pdfViewerEnabled−true", "language−zh-CN", "geolocation−[object Geolocation]",
-		"userAgentData−[object NavigatorUAData]", "getUserMedia−function getUserMedia() { [native code] }",
-		"sendBeacon−function sendBeacon() { [native code] }", "hardwareConcurrency−32",
-		"windowControlsOverlay−[object WindowControlsOverlay]",
+	// Object.keys 采样池 — React 在 DOM 上注入的随机后缀属性 key
+	objKeysPool := []string{
+		"_reactListening8in7sfyhjvp",
+		"_reactListeningo743lnnpvdg",
+		"_reactListening" + randomHex(8),
+		"__reactFiber$" + randomHex(8),
+		"__reactProps$" + randomHex(8),
 	}
-	windowKeys := []string{
-		"0", "window", "self", "document", "name", "location", "customElements", "history", "navigation",
-		"innerWidth", "innerHeight", "scrollX", "scrollY", "visualViewport", "screenX", "screenY", "outerWidth",
-		"outerHeight", "devicePixelRatio", "screen", "chrome", "navigator", "onresize", "performance", "crypto",
-		"indexedDB", "sessionStorage", "localStorage", "scheduler", "alert", "atob", "btoa", "fetch", "matchMedia",
-		"postMessage", "queueMicrotask", "requestAnimationFrame", "setInterval", "setTimeout", "caches",
-		"__NEXT_DATA__", "__BUILD_MANIFEST", "__NEXT_PRELOADREADY",
+	// Object.getOwnPropertyNames(window) 采样池 — 从 window 属性名中随机取
+	winPropPool := []string{
+		"onchange", "location", "closed", "postMessage", "queueMicrotask",
+		"requestAnimationFrame", "setInterval", "setTimeout", "caches",
+		"indexedDB", "sessionStorage", "localStorage", "performance",
+		"crypto", "navigator", "screen", "fetch",
 	}
-	documentKeys := []string{"_reactListeningo743lnnpvdg", "location"}
-	cores := []int{8, 16, 24, 32}
-	now := time.Now().In(time.FixedZone("EST", -5*3600)).Format("Mon Jan 02 2006 15:04:05") + " GMT-0500 (Eastern Standard Time)"
+	// Date().toString() — 使用太平洋时区（ChatGPT 匿名端点默认时区）
+	loc, _ := time.LoadLocation("America/Los_Angeles")
+	t := time.Now().In(loc)
+	zoneName, offsetSec := t.Zone()
+	offsetSign := "+"
+	if offsetSec < 0 {
+		offsetSign = "-"
+		offsetSec = -offsetSec
+	}
+	dateStr := fmt.Sprintf("%s GMT%s%02d%02d (%s)",
+		t.Format("Mon Jan 02 2006 15:04:05"),
+		offsetSign, offsetSec/3600, (offsetSec%3600)/60, zoneName)
+
 	return []any{
-		randomChoiceInt([]int{3000, 4000, 5000}),
-		now,
-		int64(4294705152),
-		0,
-		userAgent,
-		randomChoice(scriptSources),
-		dataBuild,
-		"en-US",
-		"en-US,es-US,en,es",
-		0,
-		randomChoice(navigatorKeys),
-		randomChoice(documentKeys),
-		randomChoice(windowKeys),
-		float64(time.Now().UnixNano()) / 1e6,
-		util.NewUUID(),
-		"",
-		randomChoiceInt(cores),
-		timeOrigin,
-		0, // Number("ai" in window)
-		0, // Number("createPRNG" in window)
-		0, // Number("cache" in window)
-		0, // Number("data" in window)
-		0, // Number("solana" in window)
-		0, // Number("dump" in window)
-		0, // Number("InstallTrigger" in window) — Chrome/Edge=0, Firefox=1
+		fmt.Sprintf("%d", randomChoiceInt([]int{3000, 4000, 5000})), // [0]  screen.width+screen.height (string)
+		dateStr,                          // [1]  Date().toString()
+		"4294967296",                     // [2]  performance.memory.jsHeapSizeLimit
+		0,                                // [3]  nonce (运行时写入)
+		rand.Float64(),                   // [4]  Math.random()
+		userAgent,                        // [5]  navigator.userAgent
+		randomChoice(scriptSources),      // [6]  <script src> 随机 URL
+		dataBuild,                        // [7]  c/.../_ script 目录
+		"en-US",                          // [8]  navigator.language
+		0,                                // [9]  elapsed ms (运行时写入)
+		[]string{"en-US", "en"},          // [10] navigator.languages (数组)
+		rand.Float64(),                   // [11] Math.random()
+		randomChoice(objKeysPool),        // [12] Object.keys 随机键
+		randomChoice(winPropPool),        // [13] Object.getOwnPropertyNames(window) 随机键
+		float64(time.Now().UnixNano())/1e6, // [14] performance.now()
+		"",                               // [15] sessionStorage.sid
+		"",                               // [16] URLSearchParams(location.search)
+		"Win32",                          // [17] navigator.platform
+		timeOrigin,                       // [18] performance.timeOrigin
+		0,                                // [19] Number("ai" in window)
+		0,                                // [20] Number("InstallTrigger" in window) — Chrome=0
+		0,                                // [21] Number("solana" in window)
+		1,                                // [22] Number("TextEncoder" in window)
 	}
 }
 
+// randomHex returns a random n-character lowercase hex string.
+func randomHex(n int) string {
+	const hexChars = "0123456789abcdef"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = hexChars[rand.Intn(len(hexChars))]
+	}
+	return string(b)
+}
+
 func powGenerate(seed, difficulty string, config []any, limit int) (string, bool) {
-	seedStr := seed
-	part1 := mustMarshal(config[:3])
-	part1 = append(part1[:len(part1)-1], ',')
-	part2 := mustMarshal(config[4:9])
-	part2 = append([]byte(","), part2[1:len(part2)-1]...)
-	part2 = append(part2, ',')
-	part3 := mustMarshal(config[10:])
-	part3 = append([]byte(","), part3[1:]...)
-	for i := 0; i < limit; i++ {
-		finalJSON := bytes.Join([][]byte{
-			part1,
-			[]byte(fmt.Sprint(i)),
-			part2,
-			[]byte(fmt.Sprint(i >> 1)),
-			part3,
-		}, nil)
-		encoded := base64.StdEncoding.EncodeToString(finalJSON)
-		hashStr := zvtHash(seedStr + encoded)
-		if hashStr[:len(difficulty)] <= difficulty {
+	t0 := time.Now()
+	for nonce := 0; nonce < limit; nonce++ {
+		config[3] = nonce
+		config[9] = int64(math.Round(float64(time.Since(t0)) / float64(time.Millisecond)))
+
+		// Full JSON marshal each iteration — matches JS JSON.stringify (no HTML escaping)
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(config); err != nil {
+			continue
+		}
+		encoded := base64.StdEncoding.EncodeToString(bytes.TrimSpace(buf.Bytes()))
+
+		hashStr := zvtHash(seed + encoded)
+		if len(hashStr) >= len(difficulty) && hashStr[:len(difficulty)] <= difficulty {
 			return encoded, true
 		}
 	}
-	return randomBase64(24) + base64.StdEncoding.EncodeToString([]byte(`"`+seed+`"`)), false
+	return randomBase64(24), false
 }
 
 // randomBase64 returns a random string of n base64-safe characters.
@@ -170,11 +176,6 @@ func zvtHash(input string) string {
 	return fmt.Sprintf("%08x", h)
 }
 
-func mustMarshal(v any) []byte {
-	data, _ := json.Marshal(v)
-	return data
-}
-
 func randomChoice(items []string) string {
 	if len(items) == 0 {
 		return ""
@@ -187,4 +188,17 @@ func randomChoiceInt(items []int) int {
 		return 0
 	}
 	return items[rand.Intn(len(items))]
+}
+
+// rawProofAnswer extracts the raw base64 PoW answer from a proof token.
+// Format: "gAAAAAB" + <raw_answer> + "~S"  →  returns <raw_answer>.
+// If the token doesn't match the expected format, returns it as-is.
+func rawProofAnswer(proofToken string) string {
+	const prefix = "gAAAAAB"
+	const suffix = "~S"
+	t := strings.TrimSpace(proofToken)
+	if !strings.HasPrefix(t, prefix) || !strings.HasSuffix(t, suffix) {
+		return t
+	}
+	return t[len(prefix) : len(t)-len(suffix)]
 }
