@@ -44,7 +44,7 @@ recordSuccess/recordFailure → UpdateAccount(token, updates)
 |------|------|
 | `internal/service/account_warming.go` | 接口定义（`WarmingRunner`）、数据结构（`WarmingStatus`、`WarmingPrompt`）、工具函数（`RandomThinkDuration`、`RandomReadDuration`、`IsToday`） |
 | `internal/httpapi/warming_worker.go` | `WarmingRunner` 接口的具体实现：单次养号会话、SSE 消费、成功/失败记录 |
-| `internal/service/account.go` | 养号账号的过滤隔离（文本请求、图像生成、限流恢复等路径） |
+| `internal/service/account.go` | 养号账号的过滤隔离、开始养号前置刷新、账号 warming 字段规范化 |
 | `internal/httpapi/app.go` | 启动时初始化 warming worker，加载 `warming_prompts.json` |
 | `internal/httpapi/routes.go` | 三个养号控制 API + 账号编辑时支持修改 warming 字段 |
 
@@ -84,7 +84,20 @@ if worker, err := newWarmingWorker(accounts, proxy,
 }
 ```
 
-如果 `warming_prompts.json` 文件不存在或内容为空，worker 初始化失败，养号功能整体禁用。
+如果 `warming_prompts.json` 文件不存在、内容为空或 JSON 格式错误，worker 初始化失败，养号功能整体禁用。此时调用 `POST /api/accounts/warming/start` 会返回类似：
+
+```json
+{
+  "refresh": null,
+  "status": {
+    "running": false,
+    "processed": 0,
+    "total": 0
+  }
+}
+```
+
+线上 systemd 部署时，运行目录通常是 `/opt/chatgpt2api/data/warming_prompts.json`。`deploy/update.sh` 在完整更新和 `--sync-ac` 模式下会把项目目录 `data/warming_prompts.json` 同步到该运行目录。
 
 ---
 
@@ -105,7 +118,8 @@ if worker, err := newWarmingWorker(accounts, proxy,
 ### 3.3 维护操作
 
 - `listRefreshableLimitedTokens()`（`account.go:163-179`）— 限流恢复扫描
-- `RefreshAccounts()` 批量刷新不包含养号账号
+- `StartLimitedWatcher()` 触发的自动限流恢复不会处理养号账号
+- `RefreshAccounts()` 本身不强制排除养号账号；管理员手动刷新指定账号、或开始养号前置刷新时，可以刷新养号账号的信息和额度
 
 ### 3.4 辅助函数
 
@@ -127,12 +141,57 @@ func isWarmingAccount(account map[string]any) bool {
 |------|------|
 | 触发方式 | API 调用 `POST /api/accounts/warming/start` |
 | 执行频率 | 每个账号每天最多一次（按 `warming_last_action_at` 判断） |
-| 账号选取 | 遍历所有 `warming_status == "warming"` 且今日未执行过的账号 |
+| 账号选取 | 遍历原始账号记录中 `warming_status == "warming"` 且今日未执行过的账号 |
 | 完成条件 | `warming_day >= 7` 时自动将 `warming_status` 标记为 `"done"` |
 | 并发模型 | 单 goroutine 串行执行，一个接一个处理 |
 | 停止方式 | `POST /api/accounts/warming/stop` 触发 context cancel，当前账号完成后退出 |
 
-### 4.2 单次养号会话流程
+### 4.2 开始养号前置刷新
+
+`AccountService.StartWarming(ctx)` 在启动 worker 前，会先找出需要刷新额度的养号账号，并调用内部 `RefreshAccounts()`：
+
+```go
+refresh := s.RefreshAccounts(ctx, s.listRefreshableWarmingTokens(time.Now()))
+s.warmingWorker.Start()
+```
+
+筛选条件：
+
+| 条件 | 说明 |
+|------|------|
+| `warming_status == "warming"` | 只处理当前处于养号中的账号 |
+| `status == "过期待刷新"` | 账号 token/会话过期后需要先刷新 |
+| `restore_at <= now` | 前端显示“已到恢复时间”的限流账号 |
+
+说明：
+
+- 这是后端内部调用，不会在浏览器 Network 中出现单独的 `/api/accounts/refresh` 请求。
+- 刷新结果会作为 `POST /api/accounts/warming/start` 响应中的 `refresh` 字段返回。
+- 如果 worker 未初始化或已经运行中，`refresh` 为 `null`。
+- 如果没有需要刷新的养号账号，`refresh` 是一个空刷新结果对象，`total` 为 `0`。
+
+### 4.3 账号收集
+
+worker 通过 `ListTokens()` + `GetAccount()` 读取原始账号记录，再判断 `warming_status`、`warming_last_action_at`。不要使用前端展示用的 `ListAccounts()` 字段名做 worker 判定，因为列表响应中字段会转换为 `warmingStatus`、`warmingDay`。
+
+```go
+func (w *warmingWorker) collectWarmingAccounts() []map[string]any {
+    tokens := w.svc.ListTokens()
+    for _, token := range tokens {
+        item := w.svc.GetAccount(token)
+        if util.Clean(item["warming_status"]) != "warming" {
+            continue
+        }
+        if service.IsToday(util.Clean(item["warming_last_action_at"])) {
+            continue
+        }
+        out = append(out, item)
+    }
+    return out
+}
+```
+
+### 4.4 单次养号会话流程
 
 ```
 1. Bootstrap (GET /)
@@ -158,7 +217,7 @@ func isWarmingAccount(account map[string]any) bool {
    → 再次思考延迟 → 发送追问 → 完整消费 SSE → 阅读延迟
 ```
 
-### 4.3 成功处理
+### 4.5 成功处理
 
 ```go
 func (w *warmingWorker) recordSuccess(account map[string]any) {
@@ -177,7 +236,7 @@ func (w *warmingWorker) recordSuccess(account map[string]any) {
 }
 ```
 
-### 4.4 失败处理
+### 4.6 失败处理
 
 ```go
 func (w *warmingWorker) recordFailure(account map[string]any) {
@@ -191,7 +250,7 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 
 连续失败 ≥3 次，前端会显示危险标记 `(失败N次)`。
 
-### 4.5 提示词语料库
+### 4.7 提示词语料库
 
 存储在 `data/warming_prompts.json`，格式：
 
@@ -210,7 +269,7 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/accounts/warming/start` | 开始养号（后台串行处理所有 warming 账号） |
+| `POST` | `/api/accounts/warming/start` | 先刷新到期/过期的 warming 账号，再后台串行处理所有 warming 账号 |
 | `POST` | `/api/accounts/warming/stop` | 停止养号（当前账号完成后退出） |
 | `GET` | `/api/accounts/warming/status` | 查看养号状态 |
 
@@ -218,6 +277,17 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 
 ```json
 {
+  "refresh": {
+    "refreshed": 1,
+    "session_refreshed": 0,
+    "session_failed": 0,
+    "total": 1,
+    "failed": 0,
+    "errors": [],
+    "results": [],
+    "duration_ms": 1234,
+    "items": []
+  },
   "status": {
     "running": true,
     "current_account": "sk-...abc",
@@ -228,9 +298,22 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 }
 ```
 
+`refresh` 为开始养号前置刷新结果。该刷新在后端内部完成，不会产生额外的 `/api/accounts/refresh` 浏览器请求。若 worker 未初始化或已经在运行，`refresh` 为 `null`。
+
 ### 5.2 账号更新中的 Warming 字段
 
 `POST /api/accounts/update` 支持更新 `warming_status` 和 `warming_day`，服务端校验 `warming_status` 只能为 `""`、`"warming"`、`"done"`。
+
+前端取消养号时会发送：
+
+```json
+{
+  "account_id": "xxx",
+  "warming_status": null
+}
+```
+
+后端允许 `warming_status: null` 作为显式清空操作，并由 `normalizeAccount()` 规范化为未养号状态。
 
 ---
 
@@ -240,18 +323,21 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 
 | 功能 | 位置 | 说明 |
 |------|------|------|
-| 养号状态标签 | `page.tsx:535-546` | 表格"养号"列显示 `已养熟` / `养号中 Dx`，错误≥3次标红 |
-| 编辑对话框 | `page.tsx:757-781` | 手动设置养号状态和天数 |
-| Account 类型定义 | `api.ts:164-167` | `warmingStatus`、`warmingDay`、`warmingErrors`、`warmingLastActionAt` |
-| updateAccount 参数 | `api.ts:863-864` | `warming_status`、`warming_day` |
+| 养号任务面板 | `web/src/app/accounts/page.tsx` | 展示 worker 运行状态、进度、当前账号、最近错误 |
+| 开始/停止/刷新状态 | `web/src/app/accounts/page.tsx` | 调用 `/api/accounts/warming/start`、`stop`、`status` |
+| 养号状态筛选 | `web/src/app/accounts/page.tsx` | 支持全部养号、未养号、养号中、已养熟、失败账号 |
+| 养号状态标签 | `web/src/app/accounts/page.tsx` | 表格"养号"列显示 `已养熟` / `养号中 Dx`，错误≥3次标红，并标记今日已跑 |
+| 编辑对话框 | `web/src/app/accounts/page.tsx` | 手动设置养号状态和天数 |
+| 批量操作 | `web/src/app/accounts/page.tsx` | 对当前筛选结果中的选中账号批量设为养号中、已养熟、取消养号 |
+| Account 类型定义 | `web/src/lib/api.ts` | `warmingStatus`、`warmingDay`、`warmingErrors`、`warmingLastActionAt` |
+| updateAccount 参数 | `web/src/lib/api.ts` | `warming_status`、`warming_day`，支持 `warming_status: null` 清空 |
 
-### 6.2 未实现
+### 6.2 交互注意事项
 
-| 功能 | 说明 |
-|------|------|
-| 养号开始/停止按钮 | 已有 API（`/api/accounts/warming/start`、`stop`），前端未对接 |
-| 养号进度面板 | 已有 API（`/api/accounts/warming/status`），前端未展示 |
-| 养号状态筛选 | 按 warming_status 过滤账号列表 |
+- “开始养号”不接收前端选中的账号列表；后端会扫描所有 `warming_status == "warming"` 的账号。
+- 点击“开始养号”前，若存在到期或过期的养号账号，后端会内部刷新其账号信息和额度。
+- 浏览器 Network 中只会看到 `/api/accounts/warming/start` 请求，不会看到额外的 `/api/accounts/refresh` 请求。
+- 如果 `/api/accounts/warming/start` 返回 `refresh: null` 且 `status.running == false`，通常表示 worker 未初始化；优先检查运行目录中的 `data/warming_prompts.json` 和服务启动日志。
 
 ---
 
@@ -262,6 +348,17 @@ func (w *warmingWorker) recordFailure(account map[string]any) {
 | `warming_prompts.json` | `data/warming_prompts.json` | 养号提示词语料库，由 `DataDir` 指定路径 |
 | `auto_remove_invalid_accounts` | `config.go` | 自动移除异常账号（与养号无直接关系但影响号池） |
 | `auto_remove_rate_limited_accounts` | `config.go` | 自动移除限流账号（同上） |
+
+### 7.1 systemd 部署同步
+
+`deploy/update.sh` 会在以下模式同步语料库：
+
+| 模式 | 行为 |
+|------|------|
+| `sudo ./deploy/update.sh` | 构建并更新二进制后，启动服务前同步 `data/warming_prompts.json` 到 `/opt/chatgpt2api/data/warming_prompts.json` |
+| `sudo ./deploy/update.sh --sync-ac` | 同步 `data/auto_import/*.json` 后，同步 `warming_prompts.json` 并重启服务 |
+
+`--env` 模式只更新 `.env`，不会同步语料库。
 
 ---
 

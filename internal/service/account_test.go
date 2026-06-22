@@ -989,6 +989,33 @@ func TestSummarizeRefreshErrorBodyPrefersJSONMessage(t *testing.T) {
 	}
 }
 
+func TestNextRandomDailyRefreshTime(t *testing.T) {
+	loc := time.FixedZone("TEST", 8*60*60)
+	before := time.Date(2026, 6, 22, 3, 30, 0, 0, loc)
+	got := nextRandomDailyRefreshTime(before, "04:00", "05:00")
+	if got.Before(time.Date(2026, 6, 22, 4, 0, 0, 0, loc)) || got.After(time.Date(2026, 6, 22, 5, 0, 0, 0, loc)) {
+		t.Fatalf("next random time before window = %v, want within 04:00-05:00", got)
+	}
+
+	after := time.Date(2026, 6, 22, 4, 30, 0, 0, loc)
+	got = nextRandomDailyRefreshTime(after, "04:00", "05:00")
+	if got.Before(after) || got.After(time.Date(2026, 6, 22, 5, 0, 0, 0, loc)) {
+		t.Fatalf("next random time inside window = %v, want remaining current window", got)
+	}
+
+	late := time.Date(2026, 6, 22, 5, 30, 0, 0, loc)
+	got = nextRandomDailyRefreshTime(late, "04:00", "05:00")
+	if got.Before(time.Date(2026, 6, 23, 4, 0, 0, 0, loc)) || got.After(time.Date(2026, 6, 23, 5, 0, 0, 0, loc)) {
+		t.Fatalf("next random time after window = %v, want next day window", got)
+	}
+
+	afterMidnight := time.Date(2026, 6, 22, 1, 0, 0, 0, loc)
+	got = nextRandomDailyRefreshTime(afterMidnight, "23:00", "02:00")
+	if got.Before(afterMidnight) || got.After(time.Date(2026, 6, 22, 2, 0, 0, 0, loc)) {
+		t.Fatalf("next random time cross-midnight = %v, want remaining overnight window", got)
+	}
+}
+
 func newTestAccountService(t *testing.T) *AccountService {
 	t.Helper()
 	backend := newTestStorageBackend(t)

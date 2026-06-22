@@ -22,6 +22,9 @@ var settingEnvKeys = map[string]string{
 	"base_url":                          "CHATGPT2API_BASE_URL",
 	"proxy":                             "CHATGPT2API_PROXY",
 	"refresh_account_interval_minute":   "CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE",
+	"daily_account_refresh_enabled":     "CHATGPT2API_DAILY_ACCOUNT_REFRESH_ENABLED",
+	"daily_account_refresh_start_time":  "CHATGPT2API_DAILY_ACCOUNT_REFRESH_START_TIME",
+	"daily_account_refresh_end_time":    "CHATGPT2API_DAILY_ACCOUNT_REFRESH_END_TIME",
 	"image_task_timeout_seconds":        "CHATGPT2API_IMAGE_TASK_TIMEOUT_SECONDS",
 	"user_default_concurrent_limit":     "CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT",
 	"user_default_rpm_limit":            "CHATGPT2API_USER_DEFAULT_RPM_LIMIT",
@@ -178,6 +181,18 @@ func (s *Store) RegistrationEnabled() bool {
 
 func (s *Store) RefreshAccountIntervalMinute() int {
 	return intSetting(s.settingValue("refresh_account_interval_minute", 5), 5)
+}
+
+func (s *Store) DailyAccountRefreshEnabled() bool {
+	return util.ToBool(s.settingValue("daily_account_refresh_enabled", true))
+}
+
+func (s *Store) DailyAccountRefreshStartTime() string {
+	return normalizeDailyAccountRefreshTime(s.settingValue("daily_account_refresh_start_time", "04:00"), "04:00")
+}
+
+func (s *Store) DailyAccountRefreshEndTime() string {
+	return normalizeDailyAccountRefreshTime(s.settingValue("daily_account_refresh_end_time", "05:00"), "05:00")
 }
 
 func (s *Store) ImageRetentionDays() int {
@@ -426,6 +441,9 @@ func (s *Store) Get() map[string]any {
 	s.mu.RUnlock()
 	delete(data, "image_concurrent_limit")
 	data["refresh_account_interval_minute"] = s.RefreshAccountIntervalMinute()
+	data["daily_account_refresh_enabled"] = s.DailyAccountRefreshEnabled()
+	data["daily_account_refresh_start_time"] = s.DailyAccountRefreshStartTime()
+	data["daily_account_refresh_end_time"] = s.DailyAccountRefreshEndTime()
 	data["image_task_timeout_seconds"] = s.ImageTaskTimeoutSeconds()
 	data["user_default_concurrent_limit"] = s.UserDefaultConcurrentLimit()
 	data["user_default_rpm_limit"] = s.UserDefaultRPMLimit()
@@ -497,6 +515,12 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	}
 	if value, ok := next["default_log_view"]; ok {
 		next["default_log_view"] = normalizeDefaultLogView(value)
+	}
+	if value, ok := next["daily_account_refresh_start_time"]; ok {
+		next["daily_account_refresh_start_time"] = normalizeDailyAccountRefreshTime(value, "04:00")
+	}
+	if value, ok := next["daily_account_refresh_end_time"]; ok {
+		next["daily_account_refresh_end_time"] = normalizeDailyAccountRefreshTime(value, "05:00")
 	}
 	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "ZyphrZero/chatgpt2api"))
 	if err := s.validateSettingsUpdateLocked(next); err != nil {
@@ -622,6 +646,14 @@ func normalizeDefaultLogView(value any) string {
 	default:
 		return "meaningful"
 	}
+}
+
+func normalizeDailyAccountRefreshTime(value any, fallback string) string {
+	text := strings.TrimSpace(fmt.Sprint(value))
+	if _, err := time.Parse("15:04", text); err == nil {
+		return text
+	}
+	return fallback
 }
 
 func normalizeUpdateRepo(value any) string {

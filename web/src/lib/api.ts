@@ -250,6 +250,9 @@ export type SettingsConfig = {
   base_url?: string;
   registration_enabled?: boolean;
   refresh_account_interval_minute?: number | string;
+  daily_account_refresh_enabled?: boolean;
+  daily_account_refresh_start_time?: string;
+  daily_account_refresh_end_time?: string;
   image_task_timeout_seconds?: number | string;
   user_default_concurrent_limit?: number | string;
   user_default_rpm_limit?: number | string;

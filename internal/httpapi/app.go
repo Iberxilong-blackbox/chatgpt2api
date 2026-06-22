@@ -143,6 +143,7 @@ func NewApp() (*App, error) {
 		return time.Duration(app.config.ImageTaskTimeoutSeconds()) * time.Second
 	})
 	accounts.StartLimitedWatcher(ctx, time.Duration(cfg.RefreshAccountIntervalMinute())*time.Minute)
+	accounts.StartDailyRefreshWatcher(ctx, cfg)
 	logs.StartRetentionCleaner(ctx, cfg.LogRetentionDays, 24*time.Hour, logger)
 	_, _ = app.images.CleanupStorage(service.ImageStorageCleanupOptions{
 		RetentionDays: cfg.ImageRetentionDays(),

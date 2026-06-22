@@ -151,6 +151,15 @@ export function ConfigCard() {
   const setRefreshAccountIntervalMinute = useSettingsStore(
     (state) => state.setRefreshAccountIntervalMinute,
   );
+  const setDailyAccountRefreshEnabled = useSettingsStore(
+    (state) => state.setDailyAccountRefreshEnabled,
+  );
+  const setDailyAccountRefreshStartTime = useSettingsStore(
+    (state) => state.setDailyAccountRefreshStartTime,
+  );
+  const setDailyAccountRefreshEndTime = useSettingsStore(
+    (state) => state.setDailyAccountRefreshEndTime,
+  );
   const setImageTaskTimeoutSeconds = useSettingsStore(
     (state) => state.setImageTaskTimeoutSeconds,
   );
@@ -282,6 +291,41 @@ export function ConfigCard() {
                 placeholder="https://example.com"
                 className={settingsInputClassName}
               />
+            </Field>
+            <Field className={configFieldClassName}>
+              <span className="text-sm leading-6 font-medium">
+                每日自动刷新账号
+              </span>
+              <ConfigOption
+                checked={config?.daily_account_refresh_enabled !== false}
+                label="每天自动执行一键刷新额度"
+                onCheckedChange={setDailyAccountRefreshEnabled}
+              />
+            </Field>
+            <Field className={configFieldClassName}>
+              <ConfigFieldLabel htmlFor="settings-daily-account-refresh-time">
+                每日刷新区间
+              </ConfigFieldLabel>
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                <Input
+                  id="settings-daily-account-refresh-time"
+                  type="time"
+                  value={String(config?.daily_account_refresh_start_time || "04:00")}
+                  onChange={(event) => setDailyAccountRefreshStartTime(event.target.value)}
+                  className={settingsInputClassName}
+                />
+                <span className="text-xs text-muted-foreground">至</span>
+                <Input
+                  type="time"
+                  value={String(config?.daily_account_refresh_end_time || "05:00")}
+                  onChange={(event) => setDailyAccountRefreshEndTime(event.target.value)}
+                  className={settingsInputClassName}
+                  aria-label="每日自动刷新结束时间"
+                />
+              </div>
+              <p className="text-xs leading-5 text-muted-foreground">
+                每天在区间内随机执行一次；结束时间小于等于开始时间表示跨天。按服务器本地时区执行。
+              </p>
             </Field>
             <Field className={configFieldClassName}>
               <ConfigFieldLabel htmlFor="settings-image-retention-days">

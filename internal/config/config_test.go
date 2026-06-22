@@ -13,6 +13,9 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	unsetEnv(t, "CHATGPT2API_BASE_URL")
 	unsetEnv(t, "CHATGPT2API_PROXY")
 	unsetEnv(t, "CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE")
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_ENABLED")
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_START_TIME")
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_END_TIME")
 	unsetEnv(t, "CHATGPT2API_IMAGE_TASK_TIMEOUT_SECONDS")
 	unsetEnv(t, "CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT")
 	unsetEnv(t, "CHATGPT2API_USER_DEFAULT_RPM_LIMIT")
@@ -32,19 +35,22 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	}
 
 	got, err := store.Update(map[string]any{
-		"base_url":                        "https://example.test/root/",
-		"proxy":                           "http://127.0.0.1:8080",
-		"refresh_account_interval_minute": 7,
-		"image_concurrent_limit":          3,
-		"image_task_timeout_seconds":      420,
-		"user_default_concurrent_limit":   2,
-		"user_default_rpm_limit":          30,
-		"image_retention_days":            14,
-		"image_storage_limit_mb":          512,
-		"log_retention_days":              21,
-		"default_log_view":                "business",
-		"registration_enabled":            true,
-		"log_levels":                      []any{"debug", "error"},
+		"base_url":                         "https://example.test/root/",
+		"proxy":                            "http://127.0.0.1:8080",
+		"refresh_account_interval_minute":  7,
+		"daily_account_refresh_enabled":    false,
+		"daily_account_refresh_start_time": "03:30",
+		"daily_account_refresh_end_time":   "04:30",
+		"image_concurrent_limit":           3,
+		"image_task_timeout_seconds":       420,
+		"user_default_concurrent_limit":    2,
+		"user_default_rpm_limit":           30,
+		"image_retention_days":             14,
+		"image_storage_limit_mb":           512,
+		"log_retention_days":               21,
+		"default_log_view":                 "business",
+		"registration_enabled":             true,
+		"log_levels":                       []any{"debug", "error"},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -70,6 +76,9 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 		"CHATGPT2API_BASE_URL=https://example.test/root/",
 		"CHATGPT2API_PROXY=http://127.0.0.1:8080",
 		"CHATGPT2API_REFRESH_ACCOUNT_INTERVAL_MINUTE=7",
+		"CHATGPT2API_DAILY_ACCOUNT_REFRESH_ENABLED=false",
+		"CHATGPT2API_DAILY_ACCOUNT_REFRESH_START_TIME=03:30",
+		"CHATGPT2API_DAILY_ACCOUNT_REFRESH_END_TIME=04:30",
 		"CHATGPT2API_IMAGE_TASK_TIMEOUT_SECONDS=420",
 		"CHATGPT2API_USER_DEFAULT_CONCURRENT_LIMIT=2",
 		"CHATGPT2API_USER_DEFAULT_RPM_LIMIT=30",
@@ -86,6 +95,52 @@ func TestStoreUpdatePersistsRuntimeSettings(t *testing.T) {
 	}
 	if strings.Contains(envText, "CHATGPT2API_IMAGE_CONCURRENT_LIMIT") {
 		t.Fatalf(".env persisted removed image concurrent limit:\n%s", envText)
+	}
+}
+
+func TestStoreDailyAccountRefreshDefaultsAndNormalization(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CHATGPT2API_ROOT", root)
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_ENABLED")
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_START_TIME")
+	unsetEnv(t, "CHATGPT2API_DAILY_ACCOUNT_REFRESH_END_TIME")
+	unsetLinuxDoEnv(t)
+
+	store, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	if !store.DailyAccountRefreshEnabled() {
+		t.Fatal("DailyAccountRefreshEnabled() = false, want true")
+	}
+	if got := store.DailyAccountRefreshStartTime(); got != "04:00" {
+		t.Fatalf("DailyAccountRefreshStartTime() = %q, want 04:00", got)
+	}
+	if got := store.DailyAccountRefreshEndTime(); got != "05:00" {
+		t.Fatalf("DailyAccountRefreshEndTime() = %q, want 05:00", got)
+	}
+
+	got, err := store.Update(map[string]any{
+		"daily_account_refresh_start_time": "bad",
+		"daily_account_refresh_end_time":   "bad",
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	assertConfigValue(t, got, "daily_account_refresh_start_time", "04:00")
+	assertConfigValue(t, got, "daily_account_refresh_end_time", "05:00")
+	envData, err := os.ReadFile(filepath.Join(root, ".env"))
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	envText := string(envData)
+	for _, want := range []string{
+		"CHATGPT2API_DAILY_ACCOUNT_REFRESH_START_TIME=04:00",
+		"CHATGPT2API_DAILY_ACCOUNT_REFRESH_END_TIME=05:00",
+	} {
+		if !strings.Contains(envText, want) {
+			t.Fatalf(".env missing %q:\n%s", want, envText)
+		}
 	}
 }
 

@@ -3,10 +3,12 @@ package service
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +37,12 @@ import (
 type AccountConfig interface {
 	AutoRemoveInvalidAccounts() bool
 	AutoRemoveRateLimitedAccounts() bool
+}
+
+type DailyAccountRefreshConfig interface {
+	DailyAccountRefreshEnabled() bool
+	DailyAccountRefreshStartTime() string
+	DailyAccountRefreshEndTime() string
 }
 
 type AccountService struct {
@@ -1377,6 +1385,110 @@ func (s *AccountService) StartLimitedWatcher(ctx context.Context, interval time.
 			}
 		}
 	}()
+}
+
+func (s *AccountService) StartDailyRefreshWatcher(ctx context.Context, cfg DailyAccountRefreshConfig) {
+	if cfg == nil {
+		return
+	}
+	go func() {
+		var scheduledAt time.Time
+		scheduleKey := ""
+		for {
+			now := time.Now()
+			currentKey := cfg.DailyAccountRefreshStartTime() + "-" + cfg.DailyAccountRefreshEndTime()
+			if scheduledAt.IsZero() || !scheduledAt.After(now) || currentKey != scheduleKey {
+				scheduledAt = nextRandomDailyRefreshTime(now, cfg.DailyAccountRefreshStartTime(), cfg.DailyAccountRefreshEndTime())
+				scheduleKey = currentKey
+			}
+			delay := time.Until(scheduledAt)
+			if delay > time.Minute {
+				delay = time.Minute
+			} else if delay < 0 {
+				delay = 0
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			if !cfg.DailyAccountRefreshEnabled() {
+				continue
+			}
+			if time.Now().Before(scheduledAt) {
+				continue
+			}
+			s.runDailyAccountRefresh(ctx)
+			scheduledAt = nextRandomDailyRefreshTime(time.Now().Add(time.Second), cfg.DailyAccountRefreshStartTime(), cfg.DailyAccountRefreshEndTime())
+			scheduleKey = cfg.DailyAccountRefreshStartTime() + "-" + cfg.DailyAccountRefreshEndTime()
+		}
+	}()
+}
+
+func (s *AccountService) runDailyAccountRefresh(ctx context.Context) {
+	tokens := s.ListTokens()
+	if len(tokens) == 0 {
+		return
+	}
+	started := time.Now()
+	result := s.RefreshAccounts(ctx, tokens)
+	s.logs.Add("每日自动刷新账号", map[string]any{
+		"module":            "accounts",
+		"operation_type":    "自动刷新",
+		"total":             len(tokens),
+		"refreshed":         util.ToInt(result["refreshed"], 0),
+		"session_refreshed": util.ToInt(result["session_refreshed"], 0),
+		"failed":            util.ToInt(result["failed"], 0),
+		"duration_ms":       time.Since(started).Milliseconds(),
+	})
+}
+
+func nextRandomDailyRefreshTime(now time.Time, startValue, endValue string) time.Time {
+	startClock := parseDailyRefreshClock(startValue, "04:00")
+	endClock := parseDailyRefreshClock(endValue, "05:00")
+	windowStart := time.Date(now.Year(), now.Month(), now.Day(), startClock.Hour(), startClock.Minute(), 0, 0, now.Location())
+	windowEndSameDay := time.Date(now.Year(), now.Month(), now.Day(), endClock.Hour(), endClock.Minute(), 0, 0, now.Location())
+	windowEnd := windowEndSameDay
+	crossesMidnight := !windowEnd.After(windowStart)
+	if crossesMidnight {
+		if now.Before(windowEndSameDay) {
+			windowStart = windowStart.Add(-24 * time.Hour)
+			windowEnd = windowEndSameDay
+		} else {
+			windowEnd = windowEnd.Add(24 * time.Hour)
+		}
+	}
+	if !now.Before(windowEnd) {
+		windowStart = windowStart.Add(24 * time.Hour)
+		windowEnd = windowEnd.Add(24 * time.Hour)
+	}
+	if now.After(windowStart) {
+		windowStart = now
+	}
+	return windowStart.Add(randomRefreshOffset(windowEnd.Sub(windowStart))).Truncate(time.Second)
+}
+
+func parseDailyRefreshClock(value, fallback string) time.Time {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(value))
+	if err == nil {
+		return parsed
+	}
+	parsed, _ = time.Parse("15:04", fallback)
+	return parsed
+}
+
+func randomRefreshOffset(max time.Duration) time.Duration {
+	maxSeconds := int64(max / time.Second)
+	if maxSeconds <= 0 {
+		return 0
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(maxSeconds+1))
+	if err != nil {
+		return time.Duration(time.Now().UnixNano()%max.Nanoseconds()) * time.Nanosecond
+	}
+	return time.Duration(n.Int64()) * time.Second
 }
 
 type imageTokenReservation struct {

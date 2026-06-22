@@ -74,6 +74,13 @@ function normalizeConfig(config: SettingsConfig): SettingsConfig {
   return {
     ...config,
     refresh_account_interval_minute: Number(config.refresh_account_interval_minute || 5),
+    daily_account_refresh_enabled: config.daily_account_refresh_enabled !== false,
+    daily_account_refresh_start_time: typeof config.daily_account_refresh_start_time === "string" && config.daily_account_refresh_start_time.trim()
+      ? config.daily_account_refresh_start_time.trim()
+      : "04:00",
+    daily_account_refresh_end_time: typeof config.daily_account_refresh_end_time === "string" && config.daily_account_refresh_end_time.trim()
+      ? config.daily_account_refresh_end_time.trim()
+      : "05:00",
     image_task_timeout_seconds: Number(config.image_task_timeout_seconds || 300),
     user_default_concurrent_limit: Number(config.user_default_concurrent_limit || 0),
     user_default_rpm_limit: Number(config.user_default_rpm_limit || 0),
@@ -169,6 +176,9 @@ type SettingsStore = {
   loadConfig: () => Promise<void>;
   saveConfig: () => Promise<void>;
   setRefreshAccountIntervalMinute: (value: string) => void;
+  setDailyAccountRefreshEnabled: (value: boolean) => void;
+  setDailyAccountRefreshStartTime: (value: string) => void;
+  setDailyAccountRefreshEndTime: (value: string) => void;
   setImageTaskTimeoutSeconds: (value: string) => void;
   setUserDefaultConcurrentLimit: (value: string) => void;
   setUserDefaultRpmLimit: (value: string) => void;
@@ -313,6 +323,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       const payload: SettingsConfig = {
         ...config,
         refresh_account_interval_minute: Math.max(1, Number(config.refresh_account_interval_minute) || 1),
+        daily_account_refresh_enabled: config.daily_account_refresh_enabled !== false,
+        daily_account_refresh_start_time: String(config.daily_account_refresh_start_time || "04:00").trim() || "04:00",
+        daily_account_refresh_end_time: String(config.daily_account_refresh_end_time || "05:00").trim() || "05:00",
         image_task_timeout_seconds: Math.min(3600, Math.max(30, Number(config.image_task_timeout_seconds) || 300)),
         user_default_concurrent_limit: Math.max(0, Number(config.user_default_concurrent_limit) || 0),
         user_default_rpm_limit: Math.max(0, Number(config.user_default_rpm_limit) || 0),
@@ -370,6 +383,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         },
       };
     });
+  },
+
+  setDailyAccountRefreshEnabled: (value) => {
+    set((state) => state.config ? { config: { ...state.config, daily_account_refresh_enabled: value } } : {});
+  },
+
+  setDailyAccountRefreshStartTime: (value) => {
+    set((state) => state.config ? { config: { ...state.config, daily_account_refresh_start_time: value } } : {});
+  },
+
+  setDailyAccountRefreshEndTime: (value) => {
+    set((state) => state.config ? { config: { ...state.config, daily_account_refresh_end_time: value } } : {});
   },
 
   setImageRetentionDays: (value) => {
