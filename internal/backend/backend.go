@@ -497,20 +497,15 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	if util.ToBool(turnstile["required"]) && util.Clean(turnstile["dx"]) != "" {
 		turnstileToken = solveTurnstileToken(util.Clean(turnstile["dx"]), sourceP)
 	}
-
-	// Sentinel dx VM: process so.collector_dx using PoW proof answer as XOR key.
+	// Sentinel dx VM: SDK 源码分析确认 XOR 密钥是 legacy p token (sourceP)，不是 proof token。
+	// 参见 docs/plan/sentinel-dx-diagnostic-journal.md 第四轮：yFt() 时序中，
+	// NNt(r, e) 存入 p token → GNt(r) 调用时 PoW 还没开始。
 	dxToken = ""
 	so := util.StringMap(data["so"])
 	if util.ToBool(so["required"]) {
 		collectorDxPresent := util.Clean(so["collector_dx"]) != ""
 		if collectorDxPresent {
-			rawKey := rawProofAnswer(proofToken)
-			if rawKey != "" {
-				dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), rawKey)
-			} else {
-				log.Printf("sentinel_dx: collector_dx present but NO XOR KEY \u2014 pow_required=%v, proofToken_empty=%v, proofToken_len=%d",
-					util.ToBool(proof["required"]), proofToken == "", len(proofToken))
-			}
+			dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), sourceP)
 		}
 		// Diagnostic logging — confirms whether OpenAI is sending dx challenges.
 		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, pow_required=%v, proofToken_empty=%v, dxToken_produced=%v",
