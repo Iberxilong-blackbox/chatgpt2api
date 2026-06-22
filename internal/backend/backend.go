@@ -502,15 +502,21 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	dxToken = ""
 	so := util.StringMap(data["so"])
 	if util.ToBool(so["required"]) {
-		if util.Clean(so["collector_dx"]) != "" {
+		collectorDxPresent := util.Clean(so["collector_dx"]) != ""
+		if collectorDxPresent {
 			rawKey := rawProofAnswer(proofToken)
 			if rawKey != "" {
 				dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), rawKey)
+			} else {
+				log.Printf("sentinel_dx: collector_dx present but NO XOR KEY \u2014 pow_required=%v, proofToken_empty=%v, proofToken_len=%d",
+					util.ToBool(proof["required"]), proofToken == "", len(proofToken))
 			}
 		}
 		// Diagnostic logging — confirms whether OpenAI is sending dx challenges.
-		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, dxToken_produced=%v",
-			util.Clean(so["collector_dx"]) != "",
+		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, pow_required=%v, proofToken_empty=%v, dxToken_produced=%v",
+			collectorDxPresent,
+			util.ToBool(proof["required"]),
+			proofToken == "",
 			dxToken != "")
 	}
 

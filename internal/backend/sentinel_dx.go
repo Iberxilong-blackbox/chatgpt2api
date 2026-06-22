@@ -18,12 +18,20 @@ import (
 func solveSentinelDxToken(dx, proofKey string) string {
 	decoded, err := base64.StdEncoding.DecodeString(dx)
 	if err != nil {
+		log.Printf("sentinel_dx: base64 decode FAILED — %v (dx len=%d, proofKey len=%d)", err, len(dx), len(proofKey))
 		return ""
 	}
+	xorResult := xorTurnstileString(string(decoded), proofKey)
 	var tokenList [][]any
-	if err := json.Unmarshal([]byte(xorTurnstileString(string(decoded), proofKey)), &tokenList); err != nil {
+	if err := json.Unmarshal([]byte(xorResult), &tokenList); err != nil {
+		preview := xorResult
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		log.Printf("sentinel_dx: JSON parse FAILED — %v (xorResult preview: %q)", err, preview)
 		return ""
 	}
+	log.Printf("sentinel_dx: VM start — %d instructions, proofKey len=%d", len(tokenList), len(proofKey))
 
 	process := map[int]any{}
 	start := time.Now()
@@ -275,6 +283,9 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			continue
 		}
 		call(process[key], token[1:]...)
+	}
+	if result == "" {
+		log.Printf("sentinel_dx: VM executed %d instructions but result is EMPTY (no opcode 3 Resolve?)", len(tokenList))
 	}
 	return result
 }
