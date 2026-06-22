@@ -9,7 +9,7 @@
 #
 # 选项:
 #   --env            仅更新 .env 配置文件并重启服务，不做构建编译
-#   --sync-ac  将项目 data/auto_import/ 下的 .json 文件同步到 /opt/chatgpt2api/data/auto_import/ 并重启服务
+#   --sync-ac        将项目 data/auto_import/ 下的 .json 文件同步到 /opt/chatgpt2api/data/auto_import/ 并重启服务
 
 set -euo pipefail
 
@@ -26,6 +26,23 @@ NC='\033[0m'
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+sync_warming_prompts() {
+    local src="${PROJECT_DIR}/data/warming_prompts.json"
+    local dst_dir="${INSTALL_DIR}/data"
+    local dst="${dst_dir}/warming_prompts.json"
+
+    if [ ! -f "$src" ]; then
+        log_warn "未找到养号语料文件，跳过同步: ${src}"
+        return 0
+    fi
+
+    mkdir -p "$dst_dir"
+    cp "$src" "$dst"
+    chown "${APP_NAME}:${APP_NAME}" "$dst"
+    chmod 640 "$dst"
+    log_info "已同步养号语料文件到 ${dst}"
+}
 
 # 检查是否以 root 运行
 if [ "$(id -u)" -ne 0 ]; then
@@ -121,6 +138,8 @@ if [ "${1:-}" = "--sync-ac" ]; then
     chmod 640 "$DST_DIR"/*.json 2>/dev/null || true
     log_info "已同步 ${json_count} 个文件到 ${DST_DIR}"
 
+    sync_warming_prompts
+
     # 重启服务触发导入
     log_info "重启服务 ${SERVICE_NAME}..."
     systemctl restart "$SERVICE_NAME"
@@ -174,12 +193,15 @@ chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/${BINARY}"
 chmod 755 "${INSTALL_DIR}/${BINARY}"
 log_info "二进制文件已更新"
 
-# 5. 启动服务
+# 5. 同步运行时数据文件
+sync_warming_prompts
+
+# 6. 启动服务
 log_info "启动服务 ${SERVICE_NAME}..."
 systemctl start "$SERVICE_NAME"
 log_info "服务已启动"
 
-# 6. 检查状态
+# 7. 检查状态
 sleep 1
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     log_info "服务运行正常"

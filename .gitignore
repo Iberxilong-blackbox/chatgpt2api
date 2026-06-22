@@ -13,6 +13,7 @@ __pycache__/
 !docs/image-generation-api.md
 !docs/user-quota-allocation-requirements.md
 !jshook/docs/
+!data/warming_prompts.json
 
 .idea
 node_modules/
