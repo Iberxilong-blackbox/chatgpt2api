@@ -286,6 +286,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	}
 	if result == "" {
 		log.Printf("sentinel_dx: VM executed %d instructions but result is EMPTY (no opcode 3 Resolve?)", len(tokenList))
+	} else {
+		log.Printf("sentinel_dx: dxToken output (len=%d): %s", len(result), result)
 	}
 	return result
 }

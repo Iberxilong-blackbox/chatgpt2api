@@ -327,10 +327,97 @@ sentinel_dx: VM executed N instructions but result is EMPTY
 + dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), sourceP)
 ```
 
-### 新日志
+### 新日志 (2026-06-22 20:23)
 
-（待部署后填入 `journalctl` 输出）
+```
+sentinel_dx: VM start — 283 instructions, proofKey len=583
+sentinel_dx: so.required=true, collector_dx_present=true, pow_required=true, proofToken_empty=false, dxToken_produced=true
+```
 
 ### 分析
 
-（待填入）
+🎉 **完全成功。** 链路全部打通：
+
+| 指标 | 值 | 含义 |
+|------|-----|------|
+| VM 指令数 | 283 | XOR 解密成功，JSON 解析出 283 条指令 |
+| proofKey 长度 | 583 | `sourceP` (legacy p token) 作为 XOR 密钥 |
+| `dxToken_produced` | **true** | VM 执行完成，opcode 3 (Resolve) 产出非空结果 |
+| unknown opcode 日志 | 0 条 | 全部 283 条指令在已知 opcode 表内（与 Turnstile VM 共用指令集） |
+| `result is EMPTY` 日志 | 0 条 | VM 成功执行到 Resolve 指令 |
+
+### 结论
+
+**`dx-Pow.md` 的 "密钥与 PoW Token 强绑定" 在当前 SDK 版本被证伪。** 实际密钥是 legacy p token，与 Turnstile 共享。
+
+**Sentinel dx VM 实现（`internal/backend/sentinel_dx.go`）的 opcode 表完全够用。** 283 条指令全部被已知 opcode 覆盖，不需要新增任何 opcode。
+
+**数据流已完整**：
+
+```
+Bootstrap → legacy p token (gAAAAAC...)
+    → POST /prepare {p: gAAAAAC...}
+    → 响应: {proofofwork, turnstile, so.collector_dx}
+    → PoW 解算 → proofToken (gAAAAAB...~S)
+    → Turnstile 解密 (密钥=sourceP) → turnstileToken
+    → Sentinel dx 解密 (密钥=sourceP) → dxToken  ← ✅ 新打通
+    → POST /finalize {prepare_token, proofofwork, turnstile, so}  ← ✅ so 字段现在有值
+```
+
+### 待验证
+
+- [ ] 长时间运行观察：是否还有 `dxToken_produced=false` 的情况？
+- [ ] `snapshot_dx` 字段的用途（当前未处理）
+- [ ] OpenAI 服务端对 `so` 字段的验证——是否接受我们产出的 dxToken？
+
+---
+
+## 第五轮：交叉验证 — 浏览器 vs 我们的 VM 输出 (待执行)
+
+### 目标
+
+`dxToken_produced=true` 只证明我们**产出了一个结果**。但 VM 执行过程中有大量浏览器环境模拟（`window.document.location`、`window.Object.keys(localStorage)`、`window.Math.random`、`window.performance.now` 等），这些模拟值如果跟真实浏览器不一致，最终 base64 编码后的 `so` 值就会不同。
+
+**验证方法**：抓取真实浏览器 finalize 请求中的 `so` 值，与同一组输入（同一次 prepare 响应）下我们产出的 `dxToken` 对比。
+
+### 方法
+
+核心问题：prepare 响应是一次性的（含 `prepare_token`），同一个 prepare 只能被 finalize 一次。无法用"同一个 prepare"同时让浏览器和我们的代码各自解一遍。
+
+因此需要**两次独立的 prepare 请求**，各自触发一次 dx 解密。虽然输入不同，但如果两次 VM 输出**结构相似**，就能确认我们的 VM 行为正确。
+
+#### 操作步骤
+
+**1. 浏览器侧（你操作）**
+
+在 DevTools Network 面板中，搜索 `finalize`，展开请求体，复制 `so` 字段的值。形式类似：
+
+```json
+{
+  "prepare_token": "...",
+  "proofofwork": "gAAAAAB...",
+  "turnstile": "...",
+  "so": "eyJ3aW5kb3cuZG9jdW1lbnQ..."  ← 复制这个
+}
+```
+
+**2. 服务器侧（我来操作）**
+
+在 `sentinel_dx.go` 的 `solveSentinelDxToken` 成功返回处加一行日志，打印最终产出的 `dxToken`：
+
+```go
+log.Printf("sentinel_dx: dxToken output: %s", result)
+```
+
+部署后从 `journalctl` 取一条对应的 `dxToken`。
+
+**3. 对比**
+
+两条 `so` 值都是 base64，decode 后对比结构：
+- key 列表是否相似（`window.document.location`、`window.Object.keys` 等）
+- 值的类型是否匹配（字符串、数组、布尔）
+- 差异是否集中在随机值（`Math.random`、`performance.now`）
+
+### 当前状态
+
+（待执行）
