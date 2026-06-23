@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log"
+	"math"
 	"math/rand"
 	"reflect"
 	"time"
@@ -73,6 +74,16 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			return
 		}
 		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(args[0])))
+	})
+
+	// [4] Reject / error — log and output error as btoa
+	process[4] = turnstileFunc(func(args ...any) {
+		if len(args) == 0 {
+			return
+		}
+		errVal := turnstileToString(args[0])
+		log.Printf("sentinel_dx: opcode 4 Reject — %s", errVal)
+		result = base64.StdEncoding.EncodeToString([]byte(errVal))
 	})
 
 	// [5] Concatenate / append
@@ -154,6 +165,38 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 	// [10] Constant string "window"
 	process[10] = "window"
+
+	// [11] document.scripts regex match — search for script src matching pattern
+	process[11] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		// Simulated: return nil (no matching script) in VM context
+		set(args[0], nil)
+	})
+
+	// [12] Map self-reference — store the process map itself
+	process[12] = turnstileFunc(func(args ...any) {
+		set(args[0], process)
+	})
+
+	// [13] Void function call with try/catch — error goes to target, raw args
+	process[13] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		fn := get(args[1])
+		if fn, ok := fn.(turnstileFunc); ok {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						set(args[0], turnstileToString(r))
+					}
+				}()
+				fn(args[2:]...)
+			}()
+		}
+	})
 
 	// [14] JSON.parse
 	process[14] = turnstileFunc(func(args ...any) {
@@ -245,8 +288,22 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		call(get(args[2]), callArgs...)
 	})
 
-	// [21] No-op
-	process[21] = turnstileFunc(func(args ...any) {})
+	// [21] Distance threshold conditional call: if |a-b| > threshold → call fn
+	process[21] = turnstileFunc(func(args ...any) {
+		if len(args) < 4 {
+			return
+		}
+		a := turnstileToFloat(get(args[0]))
+		b := turnstileToFloat(get(args[1]))
+		threshold := turnstileToFloat(get(args[2]))
+		if math.Abs(a-b) > threshold {
+			callArgs := make([]any, 0, len(args)-4)
+			for _, arg := range args[4:] {
+				callArgs = append(callArgs, get(arg))
+			}
+			call(get(args[3]), callArgs...)
+		}
+	})
 
 	// [23] Call with raw (unresolved) arguments
 	process[23] = turnstileFunc(func(args ...any) {
@@ -265,6 +322,256 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		right, rightOK := get(args[2]).(string)
 		if leftOK && rightOK {
 			set(args[0], left+"."+right)
+		}
+	})
+
+	// [0] Recursive Sentinel entry — called via opcode 7 to decrypt+execute a sub-program
+	process[0] = turnstileFunc(func(args ...any) {
+		// Takes a base64-encoded encrypted string, decrypts with key from reg 16,
+		// and executes as a sub-program.
+		if len(args) == 0 {
+			return
+		}
+		encrypted := turnstileToString(args[0])
+		key := turnstileToString(process[16])
+		decoded, err := base64.StdEncoding.DecodeString(encrypted)
+		if err != nil {
+			return
+		}
+		xorResult := xorTurnstileString(string(decoded), key)
+		var subTokens [][]any
+		if err := json.Unmarshal([]byte(xorResult), &subTokens); err != nil {
+			return
+		}
+		// Save state and run sub-VM
+		savedTokens := process[9]
+		savedResult := result
+		result = ""
+		process[9] = subTokens
+		for _, token := range subTokens {
+			if len(token) == 0 {
+				continue
+			}
+			key := turnstileKey(token[0])
+			if fn, exists := process[key]; exists {
+				if f, ok := fn.(turnstileFunc); ok {
+					f(token[1:]...)
+				}
+			}
+		}
+		// Store sub-result in the next register slot (caller reads via return path)
+		subResult := result
+		result = savedResult
+		process[9] = savedTokens
+		// Store result where caller expects it
+		set(args[0], subResult)
+	})
+
+	// [22] Sub-VM execution — push new instruction queue, execute, restore
+	process[22] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		destReg := turnstileKey(args[0])
+		subInstructions, ok := args[1].([]any)
+		if !ok {
+			return
+		}
+		// Convert []any → [][]any
+		subTokens := make([][]any, 0, len(subInstructions))
+		for _, inst := range subInstructions {
+			if arr, ok := inst.([]any); ok {
+				subTokens = append(subTokens, arr)
+			}
+		}
+		// Save state
+		savedTokens := process[9]
+		savedResult := result
+		// Run sub-VM
+		result = ""
+		process[9] = subTokens
+		for _, token := range subTokens {
+			if len(token) == 0 {
+				continue
+			}
+			key := turnstileKey(token[0])
+			if fn, exists := process[key]; exists {
+				if f, ok := fn.(turnstileFunc); ok {
+					f(token[1:]...)
+				}
+			}
+		}
+		// Store sub-result, restore state
+		set(destReg, result)
+		result = savedResult
+		process[9] = savedTokens
+	})
+
+	// [25] Noop (mt)
+	process[25] = turnstileFunc(func(args ...any) {})
+
+	// [26] Noop (wt)
+	process[26] = turnstileFunc(func(args ...any) {})
+
+	// [27] Array splice or numeric subtraction
+	process[27] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		target := get(args[0])
+		value := get(args[1])
+		if list, ok := target.([]any); ok {
+			// Array splice: remove first occurrence of value
+			for i, item := range list {
+				if reflect.DeepEqual(item, value) {
+					set(args[0], append(list[:i], list[i+1:]...))
+					return
+				}
+			}
+			return
+		}
+		// Numeric subtraction
+		a := turnstileToFloat(target)
+		b := turnstileToFloat(value)
+		set(args[0], a-b)
+	})
+
+	// [28] Noop (gt)
+	process[28] = turnstileFunc(func(args ...any) {})
+
+	// [29] Less than comparison: a < b → boolean
+	process[29] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		set(args[0], a < b)
+	})
+
+	// [30] Function definition — create a dynamic callable with param bindings
+	process[30] = turnstileFunc(func(args ...any) {
+		// Forms: (destReg, returnReg, body) or (destReg, returnReg, bindings, body)
+		if len(args) < 3 {
+			return
+		}
+		destReg := turnstileKey(args[0])
+		returnReg := turnstileKey(args[1])
+
+		var bindings []int
+		var body []any
+
+		// Detect 3-arg vs 4-arg form: if args[3] exists, it's the body in 4-arg form
+		if len(args) >= 4 {
+			if bindingsRaw, ok := args[2].([]any); ok {
+				bodyRaw, _ := args[3].([]any)
+				bindings = make([]int, 0, len(bindingsRaw))
+				for _, b := range bindingsRaw {
+					bindings = append(bindings, turnstileKey(b))
+				}
+				body = bodyRaw
+			} else if bodyRaw, ok := args[2].([]any); ok {
+				body = bodyRaw
+			}
+		} else if bodyRaw, ok := args[2].([]any); ok {
+			body = bodyRaw
+		}
+
+		if body == nil {
+			return
+		}
+
+		// Capture current process map for the closure
+		capturedProcess := process
+
+		// Create the callable
+		createdFn := turnstileFunc(func(callArgs ...any) {
+			// Save state
+			savedTokens := capturedProcess[9]
+			savedResult := result
+
+			// Bind arguments to registers
+			for i, reg := range bindings {
+				if i < len(callArgs) {
+					capturedProcess[reg] = callArgs[i]
+				}
+			}
+
+			// Convert body to [][]any
+			subTokens := make([][]any, 0, len(body))
+			for _, inst := range body {
+				if arr, ok := inst.([]any); ok {
+					subTokens = append(subTokens, arr)
+				}
+			}
+
+			// Run sub-VM
+			result = ""
+			capturedProcess[9] = subTokens
+			for _, token := range subTokens {
+				if len(token) == 0 {
+					continue
+				}
+				key := turnstileKey(token[0])
+				if fn, exists := capturedProcess[key]; exists {
+					if f, ok := fn.(turnstileFunc); ok {
+						f(token[1:]...)
+					}
+				}
+			}
+
+			// Restore state — result from sub-VM is already in 'result'
+			// or stored via opcode 3 in the return register
+			subResult := result
+			result = savedResult
+			capturedProcess[9] = savedTokens
+
+			// If sub-VM produced a result via opcode 3, store in returnReg
+			if subResult != "" {
+				capturedProcess[returnReg] = subResult
+			}
+		})
+
+		process[destReg] = createdFn
+	})
+
+	// [33] Multiplication: a * b
+	process[33] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		set(args[0], a*b)
+	})
+
+	// [34] Promise resolve — synchronously resolve and store value
+	process[34] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		value := get(args[1])
+		// Check if value is a callable that we need to await
+		if fn, ok := value.(turnstileFunc); ok {
+			// Call it and store the result (synchronous in Go)
+			fn()
+			// Result would have been stored in some register by the fn
+			return
+		}
+		set(args[0], value)
+	})
+
+	// [35] Division: a / b (division-by-zero → 0)
+	process[35] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		if b == 0 {
+			set(args[0], float64(0))
+		} else {
+			set(args[0], a/b)
 		}
 	})
 

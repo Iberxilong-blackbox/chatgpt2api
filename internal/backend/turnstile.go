@@ -72,6 +72,13 @@ func solveTurnstileToken(dx, p string) string {
 		}
 		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(args[0])))
 	})
+	// [4] Reject / error
+	process[4] = turnstileFunc(func(args ...any) {
+		if len(args) == 0 {
+			return
+		}
+		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(args[0])))
+	})
 	process[5] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
@@ -140,6 +147,34 @@ func solveTurnstileToken(dx, p string) string {
 	})
 	process[9] = tokenList
 	process[10] = "window"
+	// [11] document.scripts regex match
+	process[11] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		set(args[0], nil)
+	})
+	// [12] Map self-reference
+	process[12] = turnstileFunc(func(args ...any) {
+		set(args[0], process)
+	})
+	// [13] Void function call with try/catch
+	process[13] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		fn := get(args[1])
+		if fn, ok := fn.(turnstileFunc); ok {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						set(args[0], turnstileToString(r))
+					}
+				}()
+				fn(args[2:]...)
+			}()
+		}
+	})
 	process[14] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
@@ -216,7 +251,22 @@ func solveTurnstileToken(dx, p string) string {
 		}
 		call(get(args[2]), callArgs...)
 	})
-	process[21] = turnstileFunc(func(args ...any) {})
+	// [21] Distance threshold conditional call
+	process[21] = turnstileFunc(func(args ...any) {
+		if len(args) < 4 {
+			return
+		}
+		a := turnstileToFloat(get(args[0]))
+		b := turnstileToFloat(get(args[1]))
+		threshold := turnstileToFloat(get(args[2]))
+		if math.Abs(a-b) > threshold {
+			callArgs := make([]any, 0, len(args)-4)
+			for _, arg := range args[4:] {
+				callArgs = append(callArgs, get(arg))
+			}
+			call(get(args[3]), callArgs...)
+		}
+	})
 	process[23] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 || get(args[0]) == nil {
 			return
@@ -231,6 +281,230 @@ func solveTurnstileToken(dx, p string) string {
 		right, rightOK := get(args[2]).(string)
 		if leftOK && rightOK {
 			set(args[0], left+"."+right)
+		}
+	})
+
+	// [0] Recursive Sentinel entry
+	process[0] = turnstileFunc(func(args ...any) {
+		if len(args) == 0 {
+			return
+		}
+		encrypted := turnstileToString(args[0])
+		key := turnstileToString(process[16])
+		decoded, err := base64.StdEncoding.DecodeString(encrypted)
+		if err != nil {
+			return
+		}
+		xorResult := xorTurnstileString(string(decoded), key)
+		var subTokens [][]any
+		if err := json.Unmarshal([]byte(xorResult), &subTokens); err != nil {
+			return
+		}
+		savedTokens := process[9]
+		savedResult := result
+		result = ""
+		process[9] = subTokens
+		for _, token := range subTokens {
+			if len(token) == 0 {
+				continue
+			}
+			key := turnstileKey(token[0])
+			if fn, exists := process[key]; exists {
+				if f, ok := fn.(turnstileFunc); ok {
+					f(token[1:]...)
+				}
+			}
+		}
+		set(args[0], result)
+		result = savedResult
+		process[9] = savedTokens
+	})
+
+	// [22] Sub-VM execution
+	process[22] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		destReg := turnstileKey(args[0])
+		subInstructions, ok := args[1].([]any)
+		if !ok {
+			return
+		}
+		subTokens := make([][]any, 0, len(subInstructions))
+		for _, inst := range subInstructions {
+			if arr, ok := inst.([]any); ok {
+				subTokens = append(subTokens, arr)
+			}
+		}
+		savedTokens := process[9]
+		savedResult := result
+		result = ""
+		process[9] = subTokens
+		for _, token := range subTokens {
+			if len(token) == 0 {
+				continue
+			}
+			key := turnstileKey(token[0])
+			if fn, exists := process[key]; exists {
+				if f, ok := fn.(turnstileFunc); ok {
+					f(token[1:]...)
+				}
+			}
+		}
+		set(destReg, result)
+		result = savedResult
+		process[9] = savedTokens
+	})
+
+	// [25] Noop (mt)
+	process[25] = turnstileFunc(func(args ...any) {})
+
+	// [26] Noop (wt)
+	process[26] = turnstileFunc(func(args ...any) {})
+
+	// [27] Array splice or numeric subtraction
+	process[27] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		target := get(args[0])
+		value := get(args[1])
+		if list, ok := target.([]any); ok {
+			for i, item := range list {
+				if reflect.DeepEqual(item, value) {
+					set(args[0], append(list[:i], list[i+1:]...))
+					return
+				}
+			}
+			return
+		}
+		a := turnstileToFloat(target)
+		b := turnstileToFloat(value)
+		set(args[0], a-b)
+	})
+
+	// [28] Noop (gt)
+	process[28] = turnstileFunc(func(args ...any) {})
+
+	// [29] Less than comparison
+	process[29] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		set(args[0], a < b)
+	})
+
+	// [30] Function definition
+	process[30] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		destReg := turnstileKey(args[0])
+		returnReg := turnstileKey(args[1])
+
+		var bindings []int
+		var body []any
+
+		if len(args) >= 4 {
+			if bindingsRaw, ok := args[2].([]any); ok {
+				bodyRaw, _ := args[3].([]any)
+				bindings = make([]int, 0, len(bindingsRaw))
+				for _, b := range bindingsRaw {
+					bindings = append(bindings, turnstileKey(b))
+				}
+				body = bodyRaw
+			} else if bodyRaw, ok := args[2].([]any); ok {
+				body = bodyRaw
+			}
+		} else if bodyRaw, ok := args[2].([]any); ok {
+			body = bodyRaw
+		}
+
+		if body == nil {
+			return
+		}
+
+		capturedProcess := process
+
+		createdFn := turnstileFunc(func(callArgs ...any) {
+			savedTokens := capturedProcess[9]
+			savedResult := result
+
+			for i, reg := range bindings {
+				if i < len(callArgs) {
+					capturedProcess[reg] = callArgs[i]
+				}
+			}
+
+			subTokens := make([][]any, 0, len(body))
+			for _, inst := range body {
+				if arr, ok := inst.([]any); ok {
+					subTokens = append(subTokens, arr)
+				}
+			}
+
+			result = ""
+			capturedProcess[9] = subTokens
+			for _, token := range subTokens {
+				if len(token) == 0 {
+					continue
+				}
+				key := turnstileKey(token[0])
+				if fn, exists := capturedProcess[key]; exists {
+					if f, ok := fn.(turnstileFunc); ok {
+						f(token[1:]...)
+					}
+				}
+			}
+
+			subResult := result
+			result = savedResult
+			capturedProcess[9] = savedTokens
+
+			if subResult != "" {
+				capturedProcess[returnReg] = subResult
+			}
+		})
+
+		process[destReg] = createdFn
+	})
+
+	// [33] Multiplication: a * b
+	process[33] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		set(args[0], a*b)
+	})
+
+	// [34] Promise resolve (synchronous in Go)
+	process[34] = turnstileFunc(func(args ...any) {
+		if len(args) < 2 {
+			return
+		}
+		value := get(args[1])
+		if fn, ok := value.(turnstileFunc); ok {
+			fn()
+			return
+		}
+		set(args[0], value)
+	})
+
+	// [35] Division: a / b (zero → 0)
+	process[35] = turnstileFunc(func(args ...any) {
+		if len(args) < 3 {
+			return
+		}
+		a := turnstileToFloat(get(args[1]))
+		b := turnstileToFloat(get(args[2]))
+		if b == 0 {
+			set(args[0], float64(0))
+		} else {
+			set(args[0], a/b)
 		}
 	})
 
@@ -306,6 +580,28 @@ func turnstileToString(value any) string {
 		return strings.Join(parts, ",")
 	default:
 		return fmt.Sprint(value)
+	}
+}
+
+func turnstileToFloat(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case int:
+		return float64(v)
+	case json.Number:
+		f, _ := strconv.ParseFloat(v.String(), 64)
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(v, 64)
+		return f
+	case bool:
+		if v {
+			return 1
+		}
+		return 0
+	default:
+		return 0
 	}
 }
 

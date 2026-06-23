@@ -350,7 +350,7 @@ sentinel_dx: so.required=true, collector_dx_present=true, pow_required=true, pro
 
 **`dx-Pow.md` 的 "密钥与 PoW Token 强绑定" 在当前 SDK 版本被证伪。** 实际密钥是 legacy p token，与 Turnstile 共享。
 
-**Sentinel dx VM 实现（`internal/backend/sentinel_dx.go`）的 opcode 表完全够用。** 283 条指令全部被已知 opcode 覆盖，不需要新增任何 opcode。
+**第一次成功证明 XOR 密钥正确，VM 架构正确。** 但后续运行揭示 opcode 表并不完整（见第六轮）。
 
 **数据流已完整**：
 
@@ -363,6 +363,10 @@ Bootstrap → legacy p token (gAAAAAC...)
     → Sentinel dx 解密 (密钥=sourceP) → dxToken  ← ✅ 新打通
     → POST /finalize {prepare_token, proofofwork, turnstile, so}  ← ✅ so 字段现在有值
 ```
+
+### ⚠️ 注意
+
+"opcode 表完全够用"的结论在 20:23 之后被打破——后续请求出现了大量未知 opcode，见第六轮。
 
 ### 待验证
 
@@ -421,3 +425,361 @@ log.Printf("sentinel_dx: dxToken output: %s", result)
 ### 当前状态
 
 （待执行）
+
+---
+
+## 第六轮：多轮运行 — dx 程序是变化的 (2026-06-22 21:01~21:05)
+
+### 现象
+
+20:23 那次成功后，后续 3 次请求全部失败：
+
+```
+时间    指令数  未知opcode   proofKey  dxToken
+20:23   283     0           583       ✅ true  ← 第一次成功
+21:01   264     6 个         595       ❌ false ← unknown opcodes 50,82,59,73,85,29
+21:04   289     3 个         591       ❌ false ← unknown opcodes 54,45,27
+21:05   280     0           591       ❌ false ← 全已知但 result 为空！
+```
+
+### 分析
+
+**核心发现：OpenAI 每次下发的 `so.collector_dx` 是不同的程序。** 20:23 的成功是"恰好拿到了一个只用已知 opcode (1-24) 的简单程序"。
+
+**两种失败模式**：
+
+| 模式 | 示例 | 特征 | 原因 |
+|------|------|------|------|
+| **A: 未知 opcode** | 21:01, 21:04 | 出现 opcode 27-85 | 我们的 opcode 表（仅 1-24）不完整，SDK 有更高编号的 opcode |
+| **B: 已知但无结果** | 21:05 | 全已知 opcode，result 为空 | opcode 3 (Resolve) 没有被直接执行——它可能被 opcode 20 (条件调用) 或 opcode 7 (函数调用) 包裹，而条件不满足 |
+
+**新出现的未知 opcode**：
+
+```
+27, 29, 45, 50, 54, 59, 73, 82, 85
+```
+
+**模式 B 的关键特征**（21:05）：280 条指令全是已知 opcode，但没有 opcode 3 被直接调用。Resolve 指令很可能是通过条件跳转间接触发的——而我们的浏览器模拟值（`Math.random`、`performance.now`、`localStorage` keys 等）不满足跳转条件。
+
+**关于 opcode 参数的新观察**（21:04 日志）：
+
+```
+unknown opcode 27 的指令包含大量嵌套数组：
+[27.56 66.79 82.19 [
+  [21.24 24.57 12.44]
+  [35.54 84.8 0]
+  [87.75 51.78 false]
+  ...
+]]
+```
+
+所有数字都是浮点数（如 `50.04`, `66.01`, `0.13`）。**这些不是寄存器索引！** 这是 XOR 解密后的**混淆文本**——opcode 解析本身就是错的！
+
+### 根因重新判断
+
+回看 21:01 那条：
+```
+unknown opcode 50 (instruction: [50.04 66.01 0.13 66.01])
+```
+
+opcode 50.04？寄存器索引 66.01？**这不可能**——指令参数应该是整数索引。**XOR 密钥错了！**
+
+等等——之前 20:23 成功了。但如果 XOR 密钥错了，20:23 也不可能成功。真正的情况可能是：**不同的 prepare 请求使用了不同的 XOR 密钥。**
+
+回忆 `yFt` 的逻辑：
+```javascript
+NNt(r, e);   // 存入 e (p token)
+POST /prepare {p: e}
+NNt(r, e);   // 再次存入
+GNt(r);      // 解密 dx，用 FNt.get(r) = e
+```
+
+如果 `p` token 在两次请求之间变了（token 刷新？），那 WeakMap 里的密钥就跟 collector_dx 不匹配。
+
+### 也可能是：指令格式本身就不是整数数组
+
+另一种可能：SDK 的 VM 指令本来就可以用浮点数 opcode。opcode `50.04` 中的 `50` 是操作码，`.04` 是变体标志。如果这样，我们现有的整数 opcode 解析 (`turnstileKey(token[0])`) 正确地取整为 50——但 50 不在我们的 opcode 表中。
+
+### 待确认
+
+- [ ] **关键**：opcode 参数是整数还是浮点数？重新检查 SDK 的 VM 执行循环，看它是怎么解析指令的
+- [ ] 搜索 SDK 中的 `process[27]` ~ `process[85]` — 找到更高编号的 opcode 定义
+- [ ] 确认 21:01/21:04 的 XOR 密钥是否正确——是否有时候 sourceP 不对？
+
+### 下一步
+
+在浏览器 Sources 面板中：
+1. 找到 VM 执行循环（`for...of tokenList` / `shift()` 那段）
+2. 看它是如何从 `token[0]` 提取 opcode 的——是直接取整还是有其他处理
+3. 找到完整的 opcode dispatch table（`process[27]` = ..., `process[50]` = ...）
+4. 把所有 opcode 定义复制到 `draft.md`
+
+---
+
+## 第七轮：anything-analyzer MCP 自动化分析 (2026-06-23)
+
+### 背景
+
+前六轮的核心瓶颈有两个：
+1. **opcode 表不完整**（仅 1-24，实际有 50+）
+2. **XOR 密钥稳定性存疑**（有时成功有时失败，需要确认 sourceP 是否总是正确的密钥）
+
+之前用手动 DevTools 的方式，每次都要：设断点 → 单步 → Console 执行 → 手动复制。这种方式的局限性：
+- 断点位置依赖人工猜测（如第三轮 `PNt(e)` 断点打在了 WeakMap 写入之前导致 `undefined`）
+- 无法批量捕获多次请求的运行时数据
+- opcode dispatch table 是混淆在 `sdk.js` 里的，需要运行时 dump
+
+### 工具切换
+
+**anything-analyzer** 是一个 Electron 封装的浏览器 + MCP 服务器，提供：
+
+| 工具 | 能力 | 本轮的用途 |
+|------|------|-----------|
+| `cdp_send_command` + `Runtime.evaluate` | 在页面上下文执行任意 JS | 🔥 注入 WeakMap hook、dump opcode table、拦截 VM |
+| `navigate` / `execute_browser_action` | 自动化页面操作 | 刷新 → 输入对话 → 触发 prepare/finalize |
+| `start_capture` / `stop_capture` | 录制 HTTP 流量 | 捕获完整的 prepare/finalize 请求/响应 |
+| `filter_requests` / `get_request_detail` | 查询已捕获的请求 | 提取 `collector_dx`、`so` 字段 |
+| `get_hooks` | JS hook 记录（crypto/XHR/cookie） | 辅助验证 SDK 的 API 调用时序 |
+
+**关键突破**：`cdp_send_command` 让我们可以在页面中执行任意 JS。这意味着我们可以 **hook `WeakMap.prototype.set`**，在 SDK 调用 `FNt.set(r, e)` 时直接捕获 XOR 密钥的原始值——这是手动 DevTools 做不到的。
+
+### 方案设计
+
+**Phase 1 — 静态 dump（无需刷新，在当前页面做）**
+
+通过 CDP 读取 SDK 内存中的对象：
+```
+目标 A: opcode dispatch table — 遍历 process 数组，输出所有 opcode 编号和处理函数
+目标 B: 当前页面的 WeakMap 状态 — 检查 FNt 是否已被写入
+目标 C: SDK 版本信息 — sentinel 版本号、VM 指令集特征
+```
+
+**Phase 2 — 注入 hook + 重新触发流程**
+
+```
+1. CDP 注入 WeakMap.prototype.set hook → 记录所有 set 操作
+2. CDP 注入 WeakMap.prototype.get hook → 记录所有 get 操作
+3. 导航到 chatgpt.com（或刷新当前页面）
+4. 输入对话 → 触发完整的 prepare → PoW → dx解密 → finalize 流程
+5. 从 hook 日志中提取：
+   - XOR 密钥的原始值（WeakMap.set 的参数）
+   - collector_dx 解密后的原始指令集
+   - VM 执行结果
+```
+
+**Phase 3 — 对比验证**
+
+```
+浏览器产出的 dxToken vs 我们的 VM 产出的 dxToken：
+- 解码 base64 对比 key 列表
+- 确认随机值差异是否在可接受范围
+- 确认 opcode 覆盖是否完整
+```
+
+### 预期产出
+
+| 产出 | 用途 |
+|------|------|
+| 完整 opcode 表（编号 → 功能描述） | 修复 `turnstileKey` 的未知 opcode 问题 |
+| WeakMap 写入的完整时序 | 确认 XOR 密钥 = sourceP 的结论是否稳定 |
+| 浏览器 finalize 的 `so` 值 | 与服务器日志中的 `dxToken` 交叉验证 |
+| collector_dx 解密后的原始 JSON | 验证指令格式（整数 vs 浮点数 opcode） |
+
+### 当前状态
+
+- [x] 分析 anything-analyzer 工具能力，设计推进方案
+- [x] Phase 1：CDP dump opcode table + WeakMap 状态
+- [x] Phase 2：Go VM 扩展 opcode 表 1-24 → 0-35
+- [ ] Phase 3：对比浏览器 vs 我们的 VM 输出
+
+---
+
+## Phase 1 执行结果 (2026-06-23)
+
+### 方法
+
+1. 在 `chatgpt.com` 主页通过 CDP `Page.addScriptToEvaluateOnNewDocument` 注入全局 `WeakMap.prototype.set/get` hook
+2. 触发一轮对话（"hello"），SDK 按需加载
+3. 从 iframe (`frame.html?sv=20260423af3c`) 获取 `SentinelSDK` 各函数的 `toString()` 源码
+4. 从 HTTP 抓包获取 `sdk.js` 完整源码，静态提取 opcode dispatch table
+
+### 发现 1: WeakMap 确认 XOR 密钥
+
+主页面捕获到 2 条 SDK WeakMap 操作：
+
+```
+WeakMap.set: key={persona, token, expire_after, turnstile, proofofwork}, value="gAAAAAC..." [len=785]
+WeakMap.get: 返回相同 "gAAAAAC..." [len=785]
+```
+
+- `set` 来自 `I()` (即 `NNt`)，`get` 来自 `$()` (即 `PNt`)
+- **确认**：XOR 密钥 = legacy p token (`gAAAAAC...`)，与 Round 4 结论一致
+
+### 发现 2: SDK 版本与双 VM 架构
+
+当前 SDK 版本：**`20260423af3c`**（新旧两套 sentinel 共存：`20260219f9f6` 用于旧 `/req` 端点，`20260423af3c` 用于新 `chat-requirements` 端点）
+
+SDK 包含**两个 VM**，共享**完全相同的 opcode 指令集**：
+
+| VM | 函数 | 用途 | 状态存储 |
+|----|------|------|---------|
+| Sentinel VM | `Nt` | 解密 `collector_dx` / `snapshot_dx` | `At` (Map) |
+| Turnstile VM | `Pn` (包装 `Tn`) | 解密 `turnstile.dx` | `Cn` (Map) |
+
+### 发现 3: 完整 Opcode Dispatch Table
+
+从 `sdk.js` 源码静态提取（变量名已反混淆）：
+
+| Opcode | 内部名 | 功能 | Go VM 是否已有 |
+|--------|--------|------|:---:|
+| 0 | W | 递归调用 `Nt`（子程序入口，由 opcode 22 触发） | ❌ |
+| 1 | z | XOR 解密 `target ^= source` | ✅ |
+| 2 | B | 赋值 `set(target, value)` | ✅ |
+| **3** | H | **Resolve**（成功回调，输出 btoa 结果） | ✅ |
+| 4 | V | Reject（错误回调） | ✅ |
+| 5 | Z | 字符串拼接 `target += value` | ✅ |
+| 6 | K | 数组索引 `arr[index]` | ✅ |
+| 7 | Y | 函数调用 `fn(...args)` | ✅ |
+| 8 | X | 复制/Move `target = source` | ✅ |
+| 9 | tt | 指令队列本身（VM 内部使用） | ✅ |
+| 10 | nt | `window` 全局对象引用 | ✅ |
+| 11 | et | `document.scripts` 正则匹配 | ✅ |
+| 12 | rt | Map 自身引用 `At` | ✅ |
+| 13 | ot | Void 函数调用（try/catch，错误写入 target） | ✅ |
+| 14 | ct | `JSON.parse` | ✅ |
+| 15 | it | `JSON.stringify` | ✅ |
+| 16 | st | **XOR 密钥存储**（VM 输入参数，即 `sourceP`） | ✅ |
+| 17 | ut | Try/catch 函数调用（异步安全） | ✅ |
+| 18 | at | `atob` base64 decode | ✅ |
+| 19 | ft | `btoa` base64 encode | ✅ |
+| 20 | dt | 条件相等跳转 `if a===b → call fn` | ✅ |
+| 21 | ht | 距离阈值跳转 `if |a-b|>threshold → call fn` | ✅ |
+| 22 | pt | **子 VM 执行**（压入新指令队列，执行后恢复） | ✅ |
+| 23 | lt | Null check 条件调用 `if a!==undefined → call fn` | ✅ |
+| 24 | Q | 方法 bind `obj.method.bind(obj)` | ✅ |
+| **25** | mt | **Noop** | **❌** |
+| **26** | wt | **Noop** | **❌** |
+| **27** | yt | **数组 splice / 数值减法** | **❌** |
+| **28** | gt | **Noop** | **❌** |
+| **29** | vt | **小于比较** `a < b` | **❌** |
+| **30** | bt | **函数定义**（动态创建 callable，带参数绑定） | **❌** |
+| 31 | — | 未定义（gap） | — |
+| 32 | — | 未定义（gap） | — |
+| **33** | kt | **乘法** `a * b` | **❌** |
+| **34** | Ct | **Promise resolve**（await 异步值 → 存入 target） | **❌** |
+| **35** | St | **除法** `a / b`（除零保护 → 0） | **❌** |
+
+### 反直觉结论：Round 6 的"未知 opcode"其实是 XOR 解密错误
+
+Round 6 报告了 opcode `50.04`, `66.01`, `82.19` 等浮点值。但 SDK 源码明确显示：
+
+- **opcode 是纯整数 0-35**，不存在浮点 opcode
+- 浮点数 `50.04` 中的 `50` 不是真实 opcode 编号
+- Round 6 中 `21:01`/`21:04` 的"未知 opcode"实际上是 **XOR 解密失败** 产生的乱码
+
+这与 Round 4 的结论吻合：`20:23` 那次 XOR 解密正确 → 283 条指令全在已知范围（1-24）。而 `21:01`/`21:04` 的 XOR 密钥（`sourceP`）可能因某些原因与 `collector_dx` 不匹配。
+
+**但是**，即使 XOR 解密正确（如 `20:23`），也存在 opcode 25-30, 33-35 的 gap。这些高编号 opcode 如果在未来的 dx 程序中出现，我们当前的 Go VM（仅 1-24）会报 unknown opcode。所以 opcode 表仍然需要扩展。
+
+### 对下一步的指导
+
+1. **扩展 Go VM opcode 表 0-35**：新增 0, 25-30, 33-35 共 10 个 opcode
+2. **XOR 密钥稳定性**是更根本的问题——需要确认什么情况下 `sourceP` 与 `collector_dx` 不匹配
+3. `snapshot_dx` 通过 `sessionObserverToken` 独立处理（opcode 19 检查 `snapshot_dx`），当前未启用
+
+---
+
+## Phase 2 Implementation：Go VM opcode 扩展 1-24 → 0-35 (2026-06-23)
+
+### 目标
+
+根据 Phase 1 从 `sdk.js` (20260423af3c) 提取的完整 opcode dispatch table，将 Go VM 的 opcode 覆盖从 1-24（缺 4,11,12,13）扩展到 0-35。
+
+### 改动
+
+**`internal/backend/turnstile.go`**（共享 helper）：
+- 新增 `turnstileToFloat(value any) float64` — 将 VM 寄存器值转换为 float64，供数学 opcode 使用
+
+**`internal/backend/sentinel_dx.go`** — `solveSentinelDxToken`：
+- 新增 opcode `0`：递归 Sentinel 入口 — base64 decode → XOR decrypt → JSON parse → execute sub-VM
+- 新增 opcode `4`：Reject — 将错误值 btoa 编码后设为 result
+- 新增 opcode `11`：`document.scripts` 正则匹配 — 模拟返回 nil
+- 新增 opcode `12`：Map 自身引用 — 将 `process` map 存入寄存器
+- 新增 opcode `13`：Void 函数调用 — try/catch 包装，错误写入 target
+- 修复 opcode `21`：从 Noop 改为**距离阈值条件调用**（`|a-b| > threshold → call fn`）
+- 新增 opcode `22`：**子 VM 执行** — 保存/恢复 tokenList 和 result，执行子指令队列
+- 新增 opcode `25`, `26`, `28`：Noop（对应 SDK 的 mt, wt, gt）
+- 新增 opcode `27`：数组 splice 或数值减法（根据 target 类型判断）
+- 新增 opcode `29`：小于比较 `a < b`
+- 新增 opcode `30`：**函数定义** — 创建动态 callable，支持参数绑定和子 VM 执行
+- 新增 opcode `33`：乘法 `a * b`
+- 新增 opcode `34`：Promise resolve（Go 中同步执行）
+- 新增 opcode `35`：除法 `a / b`（除零保护 → 0）
+
+**`internal/backend/turnstile.go`** — `solveTurnstileToken`：
+- 完全相同的新增 opcode（Turnstile VM 与 Sentinel VM 共享指令集）
+
+### 关键设计
+
+**子 VM 执行模式（opcode 22）**：
+```
+保存 tokenList → 替换为子指令队列 → 执行 → 存储 sub-result → 恢复 tokenList
+```
+result 变量同样保存/恢复，确保子 VM 的 Resolve 不会污染外层。
+
+**函数定义模式（opcode 30）**：
+```
+定义: destReg, returnReg, [bindings], body → 创建 turnstileFunc
+调用时: 保存队列 → 绑定参数 → 设置队列为 body → 执行 → 结果写入 returnReg → 恢复队列
+```
+
+### 编译/测试
+
+✅ 编译通过（`go build ./...`）
+✅ 6 个已有测试全绿（`go test ./internal/backend/`）
+
+### 待验证
+
+- [ ] **部署后观察**：是否还有 `unknown opcode` 日志？
+- [ ] **dxToken_produced 稳定性**：XOR 密钥（`sourceP`）是否始终与 `collector_dx` 匹配？
+- [ ] Phase 3：浏览器 vs VM 输出交叉验证
+
+### 当前 opcode 覆盖：0-35 全部实现（31,32 是 SDK 空白）
+
+| Opcode | 功能 | 状态 |
+|--------|------|:---:|
+| 0 | 递归 Sentinel 入口 | ✅ |
+| 1 | XOR 解密 | ✅ |
+| 2 | 赋值 | ✅ |
+| 3 | Resolve (btoa) | ✅ |
+| 4 | Reject | ✅ |
+| 5 | 字符串拼接 | ✅ |
+| 6 | 数组索引 | ✅ |
+| 7 | 函数调用 | ✅ |
+| 8 | 复制/Move | ✅ |
+| 9 | 指令队列 | ✅ |
+| 10 | window 对象 | ✅ |
+| 11 | document.scripts 匹配 | ✅ |
+| 12 | Map 自身引用 | ✅ |
+| 13 | Void 函数调用 | ✅ |
+| 14 | JSON.parse | ✅ |
+| 15 | JSON.stringify | ✅ |
+| 16 | XOR 密钥存储 | ✅ |
+| 17 | Try/catch 调用 | ✅ |
+| 18 | atob | ✅ |
+| 19 | btoa | ✅ |
+| 20 | 条件相等调用 | ✅ |
+| 21 | 距离阈值调用 | ✅ (修复) |
+| 22 | 子 VM 执行 | ✅ |
+| 23 | Null check 调用 | ✅ |
+| 24 | 方法 bind | ✅ |
+| 25 | Noop (mt) | ✅ |
+| 26 | Noop (wt) | ✅ |
+| 27 | 数组 splice / 减法 | ✅ |
+| 28 | Noop (gt) | ✅ |
+| 29 | 小于比较 | ✅ |
+| 30 | 函数定义 | ✅ |
+| 31-32 | (SDK gap) | — |
+| 33 | 乘法 | ✅ |
+| 34 | Promise resolve | ✅ |
+| 35 | 除法 | ✅ |
