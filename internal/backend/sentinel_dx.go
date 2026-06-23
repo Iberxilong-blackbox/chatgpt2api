@@ -7,9 +7,30 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"os"
 	"reflect"
 	"time"
 )
+
+// logSOEvent appends a structured JSON event line to data/logs/so_events.log.
+// Used to persist sparse but critical so-related events (so_token_present,
+// unknown_opcode, dx_token_anomaly) that would otherwise scroll out of journalctl.
+// Write failures are silently ignored — this is best-effort diagnostics.
+func logSOEvent(event string, detail map[string]any) {
+	os.MkdirAll("data/logs", 0755)
+	f, err := os.OpenFile("data/logs/so_events.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	entry := map[string]any{
+		"ts":     time.Now().UTC().Format(time.RFC3339),
+		"event":  event,
+		"detail": detail,
+	}
+	data, _ := json.Marshal(entry)
+	f.Write(append(data, '\n'))
+}
 
 // solveSentinelDxToken decrypts and executes a Sentinel dx VM challenge.
 // dx is the encrypted VM bytecode from the prepare response (so.collector_dx).
@@ -82,17 +103,11 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	}
 
 	get := func(value any) any {
-		k := turnstileKey(value)
-		v := process[k]
-		if v == nil {
-			log.Printf("sentinel_dx: [%d]  get %v → nil (UNINITIALIZED)", instrIdx, k)
-		}
-		return v
+		return process[turnstileKey(value)]
 	}
 	set := func(key any, value any) {
 		k := turnstileKey(key)
 		process[k] = value
-		log.Printf("sentinel_dx: [%d]  set %v = %s", instrIdx, k, traceValue(value))
 	}
 	call := func(value any, args ...any) {
 		if fn, ok := value.(turnstileFunc); ok {
@@ -132,7 +147,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if v == nil {
 			// Register is uninitialized — fall back to simulated window
 			if _, isRegKey := args[0].(float64); isRegKey || args[0] == nil {
-				log.Printf("sentinel_dx: [%d]  op3 resolve — reg %v is nil, falling back to simWindow", instrIdx, args[0])
 				v = simWindow.toJSON()
 			} else {
 				v = args[0] // literal string value
@@ -208,19 +222,14 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		for _, arg := range args[1:] {
 			values = append(values, get(arg))
 		}
-		log.Printf("sentinel_dx: [%d]  op7 call target=%v", instrIdx, traceValue(target))
 		if target == "window.Reflect.set" && len(values) >= 3 {
 			// Browser Reflect.set(target, key, value) — target may be:
 			// - the string "window" (register 10 value) → write to simWindow
 			// - an *turnstileOrderedMap (Object.create result) → write to that map
 			if obj, ok := values[0].(*turnstileOrderedMap); ok {
 				obj.add(turnstileToString(values[1]), values[2])
-				log.Printf("sentinel_dx: [%d]  Reflect.set → orderedMap[%q] = %v", instrIdx, turnstileToString(values[1]), traceValue(values[2]))
 			} else if values[0] == "window" {
 				simWindow.add(turnstileToString(values[1]), values[2])
-				log.Printf("sentinel_dx: [%d]  Reflect.set → simWindow[%q] = %v", instrIdx, turnstileToString(values[1]), traceValue(values[2]))
-			} else {
-				log.Printf("sentinel_dx: [%d]  Reflect.set → UNHANDLED target type %T", instrIdx, values[0])
 			}
 			return
 		}
@@ -358,10 +367,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		a := get(args[0])
 		b := get(args[1])
 		if len(args) < 3 || !reflect.DeepEqual(a, b) {
-			log.Printf("sentinel_dx: [%d]  op20 EQ? %v == %v → false (skip)", instrIdx, traceValue(a), traceValue(b))
 			return
 		}
-		log.Printf("sentinel_dx: [%d]  op20 EQ? %v == %v → true (call)", instrIdx, traceValue(a), traceValue(b))
 		callArgs := make([]any, 0, len(args)-3)
 		for _, arg := range args[3:] {
 			callArgs = append(callArgs, get(arg))
@@ -379,14 +386,12 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		threshold := turnstileToFloat(get(args[2]))
 		diff := math.Abs(a - b)
 		if diff > threshold {
-			log.Printf("sentinel_dx: [%d]  op21 |%v-%v|=%v > %v → call", instrIdx, a, b, diff, threshold)
 			callArgs := make([]any, 0, len(args)-4)
 			for _, arg := range args[4:] {
 				callArgs = append(callArgs, get(arg))
 			}
 			call(get(args[3]), callArgs...)
 		} else {
-			log.Printf("sentinel_dx: [%d]  op21 |%v-%v|=%v <= %v → skip", instrIdx, a, b, diff, threshold)
 		}
 	})
 
@@ -394,10 +399,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	process[float64(23)] = turnstileFunc(func(args ...any) {
 		v := get(args[0])
 		if len(args) < 2 || v == nil {
-			log.Printf("sentinel_dx: [%d]  op23 null-check: %v == nil → skip", instrIdx, traceValue(v))
 			return
 		}
-		log.Printf("sentinel_dx: [%d]  op23 null-check: value present → call", instrIdx)
 		call(get(args[1]), args[2:]...)
 	})
 
@@ -420,7 +423,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if len(args) == 0 {
 			return
 		}
-		log.Printf("sentinel_dx: [%d]  op0 recursive entry", instrIdx)
 		encrypted := turnstileToString(args[0])
 		key := turnstileToString(process[float64(16)])
 		decoded, err := base64.StdEncoding.DecodeString(encrypted)
@@ -466,7 +468,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if !ok {
 			return
 		}
-		log.Printf("sentinel_dx: [%d]  op22 sub-VM enter (%d sub-instructions)", instrIdx, len(subInstructions))
 		// Convert []any → [][]any
 		subTokens := make([][]any, 0, len(subInstructions))
 		for _, inst := range subInstructions {
@@ -495,7 +496,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		set(destReg, result)
 		result = savedResult
 		process[float64(9)] = savedTokens
-		log.Printf("sentinel_dx: [%d]  op22 sub-VM exit, result=%s", instrIdx, traceValue(get(destReg)))
 	})
 
 	// [25] Noop (mt)
@@ -678,10 +678,29 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			if !unknownOps[key] {
 				unknownOps[key] = true
 				log.Printf("sentinel_dx: [%d] UNKNOWN key=%v args=%v", instrIdx, key, token[1:])
+				// Persist to so_events.log for later analysis
+				argsStr := fmt.Sprint(token[1:])
+				if len(argsStr) > 200 {
+					argsStr = argsStr[:200]
+				}
+				dxPreview := result
+				if len(dxPreview) > 80 {
+					dxPreview = dxPreview[:80]
+				}
+				pkPrefix := proofKey
+				if len(pkPrefix) > 50 {
+					pkPrefix = pkPrefix[:50]
+				}
+				logSOEvent("unknown_opcode", map[string]any{
+					"key":                key,
+					"args":               argsStr,
+					"instruction_index":  instrIdx,
+					"dx_token_preview":   dxPreview,
+					"proof_key_prefix":   pkPrefix,
+				})
 			}
 			continue
 		}
-		log.Printf("sentinel_dx: [%d] dispatch key=%v args=%v", instrIdx, key, token[1:])
 		call(process[key], token[1:]...)
 		if result != "" {
 			log.Printf("sentinel_dx: [%d] RESULT set: %s", instrIdx, traceValue(result))

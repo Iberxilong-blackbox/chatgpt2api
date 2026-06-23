@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -478,6 +479,24 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	// OpenAI-Sentinel-SO-Token header on subsequent conversation requests.
 	log.Printf("sentinel_dx: finalize response — status=%d, token_present=%v, so_token_present=%v",
 		resp2.StatusCode, token != "", soToken != "")
+	if soToken != "" {
+		// Rare event: server accepted our dxToken. Persist context to so_events.log.
+		dxPreview := dxToken
+		if len(dxPreview) > 80 {
+			dxPreview = dxPreview[:80]
+		}
+		pkPrefix := p
+		if len(pkPrefix) > 50 {
+			pkPrefix = pkPrefix[:50]
+		}
+		logSOEvent("so_token_present", map[string]any{
+			"so_token":         soToken,
+			"dx_token_prefix":  dxPreview,
+			"dx_token_len":     len(dxToken),
+			"proof_key_prefix": pkPrefix,
+			"finalize_status":  resp2.StatusCode,
+		})
+	}
 	if token == "" {
 		if c.AccessToken != "" {
 			return ChatRequirements{}, fmt.Errorf("missing auth chat requirements token: %v", finalizePayload2)
@@ -528,6 +547,50 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 			len(sourceP))
 	}
 
+		// Anomaly check: a "produced" dxToken that decodes to a single value
+		// (e.g. "true", "54.72") means the VM hit the nil fallback with an
+		// almost-empty simWindow — may be an early signal of SDK drift.
+		if dxToken != "" {
+			pkPrefix := sourceP
+			if len(pkPrefix) > 50 {
+				pkPrefix = pkPrefix[:50]
+			}
+			dxPreview := dxToken
+			if len(dxPreview) > 80 {
+				dxPreview = dxPreview[:80]
+			}
+			isAnomaly := false
+			var decodedKeys []string
+			if decoded, err := base64.StdEncoding.DecodeString(dxToken); err == nil {
+				var obj map[string]any
+				if json.Unmarshal(decoded, &obj) == nil {
+					if len(obj) < 5 {
+						isAnomaly = true
+						for k := range obj {
+							decodedKeys = append(decodedKeys, k)
+							if len(decodedKeys) >= 10 {
+								break
+							}
+						}
+					}
+				} else if len(dxToken) <= 8 {
+					// Not valid JSON at all (single-value string like "54.72")
+					isAnomaly = true
+					decodedKeys = []string{"<not valid JSON>"}
+				}
+			} else if len(dxToken) <= 8 {
+				isAnomaly = true
+				decodedKeys = []string{"<not valid base64>"}
+			}
+			if isAnomaly {
+				logSOEvent("dx_token_anomaly", map[string]any{
+					"dx_token_prefix":  dxPreview,
+					"dx_token_len":     len(dxToken),
+					"decoded_keys":     decodedKeys,
+					"proof_key_prefix": pkPrefix,
+				})
+			}
+		}
 	return proofToken, turnstileToken, dxToken, nil
 }
 

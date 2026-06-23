@@ -1069,13 +1069,140 @@ opcode := turnstileKey(token[0])  // float64(90.67) → int(90.67) → 90
 
 ---
 
+---
+
+## 第十二轮：寄存器修复部署 + 两次真实对话测试 (2026-06-23 14:42~14:43)
+
+### 部署内容
+
+第十一轮分析的寄存器系统修复（`process` 支持浮点 key + 不再 `int()` 截断）部署到服务器。
+
+### 测试结果：两次对话全部成功 🎉
+
+```
+14:42:01: 264 instrs | proofKey=587 | dxToken (len=704) | dxToken_produced=true
+14:43:14: 262 instrs | proofKey=591 | dxToken (len=704) | dxToken_produced=true
+```
+
+**这是首次连续两个对话都产出 dxToken。** 没有 unknown opcode，没有 XOR 乱码，VM 执行到 opcode 3。
+
+### 关键发现：两个对话都走了 opcode 3 nil 回退路径
+
+两个对话的最后一条指令模式相同：
+
+```
+dispatch key=XX.XX args=[3 YY.YY]    ← 通过 opcode 7 间接调用 opcode 3
+  get YY.YY → nil (UNINITIALIZED)     ← 结果寄存器是 nil
+  op3 resolve — reg <nil> is nil, falling back to simWindow
+  RESULT set: simWindow.toJSON()
+```
+
+传给 opcode 3 的寄存器始终是 nil——**VM 程序没有构造出真正的结果对象**。回退到 `simWindow.toJSON()`（上次改动加的 fallback）才产出了结果。
+
+### 输出结构一致，动态值不同
+
+两个对话产出的 JSON 结构完全一致，仅动态值不同：
+
+| 字段 | 对话1 | 对话2 | 来源 |
+|------|-------|-------|------|
+| `__oai_so_s` | 3.024453365866613 | 3.686907074509957 | `performance.now()` |
+| `__oai_so_t0` | 1782196921495 | 1782196994281 | `Date.now()` |
+| `__oai_so_k` ~ `__oai_so_ly` | 全部 0 | 全部 0 | 事件计数器 |
+| `__oai_so_wl`, `__oai_so_m` | null | null | 未初始化的寄存器 |
+| `__oai_so_h/hi/hp/hw` | 函数引用 | 函数引用 | 事件 handler |
+
+### VM 程序的真实意图
+
+从指令追踪可以看到，VM 程序的设计逻辑是：
+1. 把 handler 函数通过 `Reflect.set` 注册到 window 上
+2. 把各种计数器（事件类型计数、坐标等）初始化为 0
+3. 注册/注销事件监听器（`addEventListener`/`removeEventListener`）
+4. **期望浏览器事件触发 → handler 填充结果对象 → 传给 opcode 3**
+
+在无浏览器环境中，没有真实事件触发，结果对象始终为 nil。`simWindow.toJSON()` 回退恰好捕获了那些直接写到 simWindow 上的值。
+
+### 核心问题转变
+
+**之前**：能不能产出 dxToken？→ ✅ 已解决
+**现在**：产出的 dxToken 服务端接不接受？→ ⏳ 待验证
+
+---
+
+## 第十三轮：浏览器 DevTools 对照 — `so` 字段和 `so_token` (2026-06-23)
+
+### 背景
+
+第十二轮两个对话都产出了 dxToken，但需要确认服务端是否接受。通过在浏览器 DevTools 中查看真实 ChatGPT 的网络请求来对照。
+
+### 发现：浏览器根本没发 `so`
+
+**finalize 请求体**（浏览器）：
+```json
+{
+    "prepare_token": "...",
+    "proofofwork": "gAAAAAB...",
+    "turnstile": "..."
+}
+// ← 没有 "so" 字段！
+```
+
+**finalize 响应体**（浏览器）：
+```json
+{
+    "persona": "chatgpt-freeaccount",
+    "token": "gAAAAABqOi2e-q6H...",
+    "expire_after": 540,
+    "expire_at": 1782198202
+}
+// ← 没有 "so_token" 字段！
+```
+
+**conversation 请求头**（浏览器）：
+```
+openai-sentinel-chat-requirements-token: gAAAAAB...
+openai-sentinel-proof-token: xxxx
+openai-sentinel-turnstile-token: xxx
+// ← 没有 "OpenAI-Sentinel-SO-Token" header！
+```
+
+### 对比：我们 vs 浏览器
+
+| 环节 | 浏览器 SDK | 我们的服务 |
+|------|-----------|-----------|
+| prepare 响应 | 有 `so.collector_dx`（有时） | 有 `so.collector_dx` |
+| finalize 请求体 | **没有 `so`** ❌ | **有 `so`** ✅ |
+| finalize 响应体 | 有 `token`，**没有 `so_token`** | ？（待新日志） |
+| conversation 请求头 | 没有 `OpenAI-Sentinel-SO-Token` | ？（取决于服务端响应） |
+
+### 解读
+
+**可能 A：浏览器 SDK 的 dx 处理是"半成品"**
+
+SDK 代码里有完整的 Sentinel VM、opcode dispatch table、dx 解密流程（我们逆向出来的那些），但实际运行中 `GNt(r)` 解密出来的结果没有被塞进 finalize。浏览器也没发 `so`，服务端也没返回 `so_token`。这说明 `so` 字段在 SDK 中可能是**预留但未全量启用**的功能。
+
+**可能 B：`so` 只在特定条件下触发**
+
+某些对话类型或账号类型才需要 `so`，普通的文字对话不需要。我们碰到 `so.required=true` 可能只是个"欢迎来解"的挑战，不交也不影响对话。
+
+**两种可能都不算坏消息**：我们做出了浏览器都没做到的事（成功解密并执行 VM 程序），而且主动发 `so` 不会导致任何负面效果。
+
+### 下一步
+
+已添加 finalize 响应诊断日志。部署后观察：
+- `so_token_present=true` → 我们产出的 dxToken 被服务端认可
+- `so_token_present=false` → 服务端也没返回 `so_token`，跟浏览器行为一致
+
+---
+
 ## 当前总体状态 (2026-06-23)
 
 | 阶段 | 状态 | 说明 |
 |------|:---:|------|
 | XOR 密钥确认 = sourceP | ✅ | Round 4 + Round 7 + 第十轮 5/5 |
 | 完整 opcode 表提取 (0-35) | ✅ | sdk.js 静态提取 |
-| Go VM opcode 扩展至 0-35 | ✅ | committed |
-| VM 指令格式 | ✅ | 第十一轮还原：`[opcode|regKey, ...args]`，At 单 Map 双用途 |
-| **Go VM 寄存器系统修复** | 🔴 | **当前任务**：去掉 turnstileKey int() 截断 |
-| 交叉验证 | ⏳ | 修复后验证
+| Go VM opcode 扩展至 0-35 | ✅ | committed + deployed |
+| VM 指令格式 | ✅ | 第十一轮还原：`[opcode\|regKey, ...args]`，At 单 Map 双用途 |
+| Go VM 寄存器系统修复 | ✅ | 第十二轮：浮点 key 正确保留，两次对话全部成功 |
+| dxToken 产出 | ✅ | 连续成功，opcode 3 nil fallback 稳定触发 |
+| **服务端接受度验证** | 🔴 | **当前任务**：finalize 响应中 `so_token` 是否存在？ |
+| 交叉验证（浏览器 vs VM 输出） | ⏳ | 需要浏览器也成功发 `so` 才能对比 |
