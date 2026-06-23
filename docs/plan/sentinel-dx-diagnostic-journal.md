@@ -892,15 +892,156 @@ sentinel_dx: so.required=true, collector_dx_present=true, pow_required=true, pro
 
 **关键验证点**：我们发起 prepare 请求时带的 `p` 字段值，与后来用于 XOR 解密的 `sourceP`，是否是**同一个字符串**？如果不是，密钥当然不匹配。
 
-### 核心发现：问题不是 opcode 表，是 XOR 密钥稳定性
+### 核心发现：第九轮判断被推翻——XOR 正确，问题是指令格式
 
-Opcode 覆盖 0-35 在 XOR 正确时是够用的（20:23 证明了这点）。但当 XOR 密钥错时，opcode 100 也没用——解出来的指令本身就是随机字节。
+第十轮 5/5 xorResult 全是合法 JSON、结构完全一致。第九轮（以及第六轮 21:01/21:04）看到的"浮点 opcode"不是 XOR 乱码——是**浮点寄存器 key 被我们的 int() 截断误读为 opcode**。
 
 ### 行动
 
-- [ ] 加诊断日志：XOR 解密后文本预览（前 100 字符），区分"合法 JSON 指令" vs "乱码"
-- [ ] 加诊断日志：prepare 请求中实际发送的 `p` 值 vs 用于 XOR 的 `sourceP`，确认是否一致
-- [ ] 继续收集更多数据点（10-20 条），找成功/失败的规律
+- [x] 加诊断日志：XOR 解密后文本预览 + sourceP 格式 → **已上线，第十轮使用**
+- [ ] **从浏览器 SDK 提取 VM 执行循环代码**，搞清指令的真正格式
+
+---
+
+## 第十轮：5 轮部署日志 — 诊断翻转 (2026-06-23 11:51~11:54)
+
+### 日志
+
+3 次文字对话 + 2 次生图。`sourceP` 全部以 `gAAAAAC` 开头，长度 579-599。
+
+```
+11:51:00: xorResult: "[[8, 90.67, 8], [90.67, 95.87, 2], [95.87, 99.52, \"Reflect\"], ..."
+           285 instrs | unknown opcode 77 | result EMPTY | dxToken_produced=false
+
+11:51:36: xorResult: "[[8, 97.27, 8], [97.27, 37.54, 2], [37.54, 92.19, 49.36], ..."
+           256 instrs | result EMPTY | dxToken_produced=false
+
+11:52:35: xorResult: "[[8, 11.97, 8], [11.97, 85.07, 2], [85.07, 19.04, \"Reflect\"], ..."
+           290 instrs | result EMPTY | dxToken_produced=false
+
+11:53:03: xorResult: "[[8, 22.81, 8], [22.81, 42.32, 2], [42.32, 0.9, \"Reflect\"], ..."
+           262 instrs | dxToken output (len=8): dHJ1ZQ== -> "true"
+           dxToken_produced=true  <-- 唯一成功（新窗口发 "hi"）
+
+11:54:17: xorResult: "[[8, 50.62, 8], [50.62, 49.19, 2], [49.19, 11.45, \"Reflect\"], ..."
+           274 instrs | unknown opcode 69,90 | result EMPTY | dxToken_produced=false
+```
+
+### 关键发现 1：XOR 解密 100% 正确——第九轮结论被推翻
+
+5/5 全部是合法 JSON，结构完全一致：
+
+```
+[[8, N, 8], [N, N, 2], [N, N, "Reflect"], [N, N, 6], [N, N, N, N], ...]
+```
+
+对比真正的 XOR 乱码（Round 2 `"kc0\x17,0,\x11..."` — JSON parse 失败；Round 6 `[50.04, 66.01, ...]` — 数值范围 0-100 但无 `"Reflect"` 字符串）。
+
+**结论：XOR 密钥（sourceP）始终正确。** 第九轮和第六轮的"浮点 opcode"判断被推翻——那不是 XOR 乱码，是**包含浮点寄存器 key 的合法指令**。
+
+### 关键发现 2：浮点数不是 opcode，是寄存器地址
+
+`int(90.67) = 90` 被报告为 "unknown opcode 90"。但合法 opcode 只有 0-35。`NN.NN` 浮点数更可能是**寄存器地址**。
+
+五轮指令模式完全一致（仅寄存器编号不同）：
+
+```
+指令 1:  [8,      N,  8]           <- 首尾 8
+指令 2:  [N,      N,  2]           <- 末位 2 (opcode: set literal)
+指令 3:  [N,      N,  "Reflect"]   <- 字符串参数！
+指令 4:  [N,      N,  6]           <- 末位 6 (opcode: 数组索引)
+指令 5+6: [N, N, N, N] x 2        <- 全浮点
+指令 7+: [N, N, N, N, ...]         <- 混合
+```
+
+### 关键发现 3：`"Reflect"` 的语义
+
+`"Reflect"` = JavaScript 内置对象 `window.Reflect`（Proxy 配套 API），是常见的浏览器环境检测目标。
+
+### 唯一一次成功（11:53）
+
+输出 `"true"` (base64: `dHJ1ZQ==`)。那次 dx 程序可能恰好是一条简单检查（如 Reflect API 是否存在），VM 碰巧走对了路径。不可依赖。
+
+### 结论
+
+**当前核心瓶颈：我们不知道 SDK VM 如何从 `[8, 90.67, 8]` 这样的数组中提取 opcode 和参数。** opcode 不一定是第一个元素（`"Reflect"` 的出现排除了"opcode 永远在末尾"的可能）。必须提取 SDK 的 VM 执行循环源码。
+
+### 行动
+
+- [x] 从浏览器 SDK (`sdk.js` 20260423af3c) 中提取 VM 执行循环 → **第十一轮完成**
+- [x] 确认浮点数 `NN.NN` 的语义 → **是寄存器 key（At Map 的键），不是 opcode**
+- [ ] **修复 Go VM 的寄存器系统**：`turnstileKey` 不再做 `int()` 截断
+- [ ] 修复后重新部署
+
+---
+
+## 第十一轮：sdk.js 源码分析 — VM 执行循环还原 (2026-06-23)
+
+### 来源
+
+`https://chatgpt.com/sentinel/20260423af3c/sdk.js` (HTTP sequence 642)，完整反混淆。
+
+### VM 执行循环 `Pt()`
+
+```javascript
+async function Pt() {
+    for (; At.get(9).length > 0; ) {        // At[9] = 指令队列
+        const [n, ...e] = At.get(9).shift(); // 出队第一条指令
+        r = At.get(n)(...e);                 // n 直接当 key 派发！
+        r && typeof r.then === 'function' && await r;
+        Ot++;
+    }
+}
+```
+
+### 核心发现：At 是单 Map 双用途
+
+**`At` 这个 Map 同时存储 opcode 调度表和寄存器值。**
+
+| 存储内容 | Key 类型 | 示例 |
+|---------|---------|------|
+| Opcode 调度函数 | 整数 0-35 | `At[1]=XOR函数`, `At[8]=copy函数` |
+| 用户寄存器 | 浮点数、字符串… | `At[90.67]=<函数>`, `At[99.52]="Reflect"` |
+| 指令队列 (opcode 9) | 9 | `At[9] = [[8,90.67,8], ...]` |
+| XOR 密钥 (opcode 16) | 16 | `At[16] = sourceP` |
+
+派发逻辑：`At.get(n)` — 如果 `n=8`，返回 opcode 8 handler；如果 `n=90.67`，返回寄存器 90.67 里存的值（必须是 callable）。
+
+### 指令追踪：第十轮日志的前三条
+
+```
+指令1: [8,      90.67,  8]
+       n=8 → At.get(8)=copy函数
+       copy(90.67, 8) → At.set(90.67, At.get(8))
+       → 把 copy 函数存入寄存器 90.67
+
+指令2: [90.67,  95.87,  2]
+       n=90.67 → At.get(90.67)=copy函数 (刚存的!)
+       copy(95.87, 2) → At.set(95.87, At.get(2))
+       → 把 set literal 函数存入寄存器 95.87
+
+指令3: [95.87,  99.52, "Reflect"]
+       n=95.87 → At.get(95.87)=set函数 (刚存的!)
+       set(99.52, "Reflect") → At.set(99.52, "Reflect")
+       → 字符串 "Reflect" 存入寄存器 99.52
+```
+
+**这就解释了 `"Reflect"` 的来源！** — 它是 opcode 2 (set literal) 的 value 参数。
+
+### 我们的 Go VM 的 Bug
+
+```go
+opcode := turnstileKey(token[0])  // float64(90.67) → int(90.67) → 90
+// → process[90] → nil → "unknown opcode 90"
+```
+
+`int()` 截断破坏了浮点寄存器 key。SDK 的 `At` 是 JS Map，保留原始 key 类型；我们的 `process` 是 `map[int]any`，把一切 key 截成 int。
+
+### 需要的改动
+
+1. `process` 从 `map[int]any` 改为能存任意 key 的结构
+2. 派发逻辑：`token[0]` 是整数 0-35 → 静态 opcode；否则以原始值查寄存器
+3. `turnstileKey` 不再做 `int()` 截断
 
 ---
 
@@ -908,10 +1049,9 @@ Opcode 覆盖 0-35 在 XOR 正确时是够用的（20:23 证明了这点）。�
 
 | 阶段 | 状态 | 说明 |
 |------|:---:|------|
-| XOR 密钥确认 = sourceP | ⚠️ | 静态分析+WeakMap hook 确认 SDK 用 sourceP，但我们的代码中 sourceP 有时与 prepare 请求的 p 不一致 |
-| 完整 opcode 表提取 (0-35) | ✅ | 从 sdk.js (20260423af3c) 静态提取 |
-| Go VM opcode 扩展至 0-35 | ✅ | committed `fa1a7d4`，编译/测试通过 |
-| 部署到服务器 | ✅ | 第九轮部署，已产生新日志 |
-| 真实流量验证（XOR 密钥稳定性） | 🔴 | **核心瓶颈**：5 次中仅 2 次解密正确 (40%) |
-| 真实流量验证（opcode 覆盖） | ⏳ | XOR 正确时 opcode 0-35 够用（20:23 验证），XOR 错时无法评估 |
-| 交叉验证（浏览器 vs VM） | ⏳ | 第八轮受阻 + XOR 不稳定前的交叉验证意义有限 |
+| XOR 密钥确认 = sourceP | ✅ | Round 4 + Round 7 + 第十轮 5/5 |
+| 完整 opcode 表提取 (0-35) | ✅ | sdk.js 静态提取 |
+| Go VM opcode 扩展至 0-35 | ✅ | committed |
+| VM 指令格式 | ✅ | 第十一轮还原：`[opcode|regKey, ...args]`，At 单 Map 双用途 |
+| **Go VM 寄存器系统修复** | 🔴 | **当前任务**：去掉 turnstileKey int() 截断 |
+| 交叉验证 | ⏳ | 修复后验证

@@ -44,7 +44,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	}
 	log.Printf("sentinel_dx: VM start — %d instructions, proofKey len=%d", len(tokenList), len(proofKey))
 
-	process := map[int]any{}
+	process := map[any]any{}
 	start := time.Now()
 	result := ""
 	get := func(value any) any {
@@ -63,7 +63,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	// Opcode 16 uses proofKey (PoW answer) instead of the legacy p token.
 
 	// [1] XOR operation: set(dest, xor(get(srcA), get(srcB)))
-	process[1] = turnstileFunc(func(args ...any) {
+	process[float64(1)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -71,7 +71,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [2] Set literal value
-	process[2] = turnstileFunc(func(args ...any) {
+	process[float64(2)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -79,7 +79,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [3] Resolve / finalize: base64-encode value as result
-	process[3] = turnstileFunc(func(args ...any) {
+	process[float64(3)] = turnstileFunc(func(args ...any) {
 		if len(args) == 0 {
 			return
 		}
@@ -87,7 +87,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [4] Reject / error — log and output error as btoa
-	process[4] = turnstileFunc(func(args ...any) {
+	process[float64(4)] = turnstileFunc(func(args ...any) {
 		if len(args) == 0 {
 			return
 		}
@@ -97,7 +97,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [5] Concatenate / append
-	process[5] = turnstileFunc(func(args ...any) {
+	process[float64(5)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -127,7 +127,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [6] Browser property access via dot notation
-	process[6] = turnstileFunc(func(args ...any) {
+	process[float64(6)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 {
 			return
 		}
@@ -144,7 +144,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [7] Call with resolved arguments
-	process[7] = turnstileFunc(func(args ...any) {
+	process[float64(7)] = turnstileFunc(func(args ...any) {
 		if len(args) < 1 {
 			return
 		}
@@ -163,7 +163,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [8] Copy register
-	process[8] = turnstileFunc(func(args ...any) {
+	process[float64(8)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -171,13 +171,13 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [9] Instruction queue — the full decoded instruction list
-	process[9] = tokenList
+	process[float64(9)] = tokenList
 
 	// [10] Constant string "window"
-	process[10] = "window"
+	process[float64(10)] = "window"
 
 	// [11] document.scripts regex match — search for script src matching pattern
-	process[11] = turnstileFunc(func(args ...any) {
+	process[float64(11)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -186,12 +186,12 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [12] Map self-reference — store the process map itself
-	process[12] = turnstileFunc(func(args ...any) {
+	process[float64(12)] = turnstileFunc(func(args ...any) {
 		set(args[0], process)
 	})
 
 	// [13] Void function call with try/catch — error goes to target, raw args
-	process[13] = turnstileFunc(func(args ...any) {
+	process[float64(13)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -209,7 +209,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [14] JSON.parse
-	process[14] = turnstileFunc(func(args ...any) {
+	process[float64(14)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -220,7 +220,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [15] JSON.stringify
-	process[15] = turnstileFunc(func(args ...any) {
+	process[float64(15)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -231,10 +231,10 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [16] XOR key — PoW proof answer (NOT the legacy p token)
-	process[16] = proofKey
+	process[float64(16)] = proofKey
 
 	// [17] Simulated browser / JS runtime API calls
-	process[17] = turnstileFunc(func(args ...any) {
+	process[float64(17)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -268,7 +268,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [18] Base64 decode (atob)
-	process[18] = turnstileFunc(func(args ...any) {
+	process[float64(18)] = turnstileFunc(func(args ...any) {
 		if len(args) < 1 {
 			return
 		}
@@ -279,7 +279,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [19] Base64 encode (btoa)
-	process[19] = turnstileFunc(func(args ...any) {
+	process[float64(19)] = turnstileFunc(func(args ...any) {
 		if len(args) < 1 {
 			return
 		}
@@ -287,7 +287,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [20] Conditional call (equality check)
-	process[20] = turnstileFunc(func(args ...any) {
+	process[float64(20)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 || !reflect.DeepEqual(get(args[0]), get(args[1])) {
 			return
 		}
@@ -299,7 +299,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [21] Distance threshold conditional call: if |a-b| > threshold → call fn
-	process[21] = turnstileFunc(func(args ...any) {
+	process[float64(21)] = turnstileFunc(func(args ...any) {
 		if len(args) < 4 {
 			return
 		}
@@ -316,7 +316,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [23] Call with raw (unresolved) arguments
-	process[23] = turnstileFunc(func(args ...any) {
+	process[float64(23)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 || get(args[0]) == nil {
 			return
 		}
@@ -324,7 +324,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [24] Dot-join two strings
-	process[24] = turnstileFunc(func(args ...any) {
+	process[float64(24)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 {
 			return
 		}
@@ -336,14 +336,14 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [0] Recursive Sentinel entry — called via opcode 7 to decrypt+execute a sub-program
-	process[0] = turnstileFunc(func(args ...any) {
+	process[float64(0)] = turnstileFunc(func(args ...any) {
 		// Takes a base64-encoded encrypted string, decrypts with key from reg 16,
 		// and executes as a sub-program.
 		if len(args) == 0 {
 			return
 		}
 		encrypted := turnstileToString(args[0])
-		key := turnstileToString(process[16])
+		key := turnstileToString(process[float64(16)])
 		decoded, err := base64.StdEncoding.DecodeString(encrypted)
 		if err != nil {
 			return
@@ -354,10 +354,10 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			return
 		}
 		// Save state and run sub-VM
-		savedTokens := process[9]
+		savedTokens := process[float64(9)]
 		savedResult := result
 		result = ""
-		process[9] = subTokens
+		process[float64(9)] = subTokens
 		for _, token := range subTokens {
 			if len(token) == 0 {
 				continue
@@ -372,13 +372,13 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		// Store sub-result in the next register slot (caller reads via return path)
 		subResult := result
 		result = savedResult
-		process[9] = savedTokens
+		process[float64(9)] = savedTokens
 		// Store result where caller expects it
 		set(args[0], subResult)
 	})
 
 	// [22] Sub-VM execution — push new instruction queue, execute, restore
-	process[22] = turnstileFunc(func(args ...any) {
+	process[float64(22)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -395,11 +395,11 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			}
 		}
 		// Save state
-		savedTokens := process[9]
+		savedTokens := process[float64(9)]
 		savedResult := result
 		// Run sub-VM
 		result = ""
-		process[9] = subTokens
+		process[float64(9)] = subTokens
 		for _, token := range subTokens {
 			if len(token) == 0 {
 				continue
@@ -414,17 +414,17 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		// Store sub-result, restore state
 		set(destReg, result)
 		result = savedResult
-		process[9] = savedTokens
+		process[float64(9)] = savedTokens
 	})
 
 	// [25] Noop (mt)
-	process[25] = turnstileFunc(func(args ...any) {})
+	process[float64(25)] = turnstileFunc(func(args ...any) {})
 
 	// [26] Noop (wt)
-	process[26] = turnstileFunc(func(args ...any) {})
+	process[float64(26)] = turnstileFunc(func(args ...any) {})
 
 	// [27] Array splice or numeric subtraction
-	process[27] = turnstileFunc(func(args ...any) {
+	process[float64(27)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -447,10 +447,10 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [28] Noop (gt)
-	process[28] = turnstileFunc(func(args ...any) {})
+	process[float64(28)] = turnstileFunc(func(args ...any) {})
 
 	// [29] Less than comparison: a < b → boolean
-	process[29] = turnstileFunc(func(args ...any) {
+	process[float64(29)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 {
 			return
 		}
@@ -460,7 +460,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [30] Function definition — create a dynamic callable with param bindings
-	process[30] = turnstileFunc(func(args ...any) {
+	process[float64(30)] = turnstileFunc(func(args ...any) {
 		// Forms: (destReg, returnReg, body) or (destReg, returnReg, bindings, body)
 		if len(args) < 3 {
 			return
@@ -468,14 +468,14 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		destReg := turnstileKey(args[0])
 		returnReg := turnstileKey(args[1])
 
-		var bindings []int
+		var bindings []any
 		var body []any
 
 		// Detect 3-arg vs 4-arg form: if args[3] exists, it's the body in 4-arg form
 		if len(args) >= 4 {
 			if bindingsRaw, ok := args[2].([]any); ok {
 				bodyRaw, _ := args[3].([]any)
-				bindings = make([]int, 0, len(bindingsRaw))
+				bindings = make([]any, 0, len(bindingsRaw))
 				for _, b := range bindingsRaw {
 					bindings = append(bindings, turnstileKey(b))
 				}
@@ -497,7 +497,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		// Create the callable
 		createdFn := turnstileFunc(func(callArgs ...any) {
 			// Save state
-			savedTokens := capturedProcess[9]
+			savedTokens := capturedProcess[float64(9)]
 			savedResult := result
 
 			// Bind arguments to registers
@@ -517,7 +517,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 			// Run sub-VM
 			result = ""
-			capturedProcess[9] = subTokens
+			capturedProcess[float64(9)] = subTokens
 			for _, token := range subTokens {
 				if len(token) == 0 {
 					continue
@@ -534,7 +534,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			// or stored via opcode 3 in the return register
 			subResult := result
 			result = savedResult
-			capturedProcess[9] = savedTokens
+			capturedProcess[float64(9)] = savedTokens
 
 			// If sub-VM produced a result via opcode 3, store in returnReg
 			if subResult != "" {
@@ -546,7 +546,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [33] Multiplication: a * b
-	process[33] = turnstileFunc(func(args ...any) {
+	process[float64(33)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 {
 			return
 		}
@@ -556,7 +556,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [34] Promise resolve — synchronously resolve and store value
-	process[34] = turnstileFunc(func(args ...any) {
+	process[float64(34)] = turnstileFunc(func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -572,7 +572,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// [35] Division: a / b (division-by-zero → 0)
-	process[35] = turnstileFunc(func(args ...any) {
+	process[float64(35)] = turnstileFunc(func(args ...any) {
 		if len(args) < 3 {
 			return
 		}
@@ -586,7 +586,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	})
 
 	// Execution loop
-	unknownOps := map[int]bool{}
+	unknownOps := map[any]bool{}
 	for _, token := range tokenList {
 		if len(token) == 0 {
 			continue
@@ -595,7 +595,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if _, exists := process[key]; !exists {
 			if !unknownOps[key] {
 				unknownOps[key] = true
-				log.Printf("sentinel_dx: unknown opcode %d (instruction: %v)", key, token)
+				log.Printf("sentinel_dx: unknown opcode %v (instruction: %v)", key, token)
 			}
 			continue
 		}
