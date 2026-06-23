@@ -750,6 +750,46 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		}
 	})
 
+	// --- Trace infrastructure: circular buffer for last N instructions ---
+	type traceEntry struct {
+		idx    int
+		opcode string
+		detail string
+	}
+	traceBuf := make([]traceEntry, 0, 60)
+	tracePush := func(idx int, opcode string, detail string) {
+		if len(traceBuf) >= 50 {
+			traceBuf = traceBuf[1:]
+		}
+		traceBuf = append(traceBuf, traceEntry{idx: idx, opcode: opcode, detail: detail})
+	}
+	traceDump := func() {
+		log.Printf("sentinel_dx: === TRACE DUMP (last %d instructions before RESULT) ===", len(traceBuf))
+		for _, e := range traceBuf {
+			log.Printf("sentinel_dx: TRACE [%d] %s — %s", e.idx, e.opcode, e.detail)
+		}
+	}
+	// Fast helpers for token inspection
+	tokenOpcode := func(t []any) string {
+		if len(t) == 0 {
+			return "?"
+		}
+		return fmt.Sprint(t[0])
+	}
+	tokenArgs := func(t []any) string {
+		s := fmt.Sprint(t[1:])
+		if len(s) > 160 {
+			s = s[:160]
+		}
+		return s
+	}
+
+	// Detect opcode 1 (XOR), 3 (Resolve), 15 (JSON.stringify), 19 (btoa) for special logging
+	isCryptoOp := func(key any) bool {
+		k := turnstileToFloat(key)
+		return k == 1 || k == 3 || k == 15 || k == 19
+	}
+
 	// Execution loop
 	unknownOps := map[any]bool{}
 	for _, token := range tokenList {
@@ -758,11 +798,16 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		}
 		instrIdx++
 		key := turnstileKey(token[0])
+
+		// Per-instruction trace: log opcode + args
+		opcodeStr := tokenOpcode(token)
+		argsStr := tokenArgs(token)
+		traceDetail := fmt.Sprintf("args=%s", argsStr)
+
 		if _, exists := process[key]; !exists {
 			if !unknownOps[key] {
 				unknownOps[key] = true
 				log.Printf("sentinel_dx: [%d] UNKNOWN key=%v args=%v", instrIdx, key, token[1:])
-				// Persist to so_events.log for later analysis
 				argsStr := fmt.Sprint(token[1:])
 				if len(argsStr) > 200 {
 					argsStr = argsStr[:200]
@@ -783,11 +828,23 @@ func solveSentinelDxToken(dx, proofKey string) string {
 					"proof_key_prefix":   pkPrefix,
 				})
 			}
+			tracePush(instrIdx, opcodeStr, "UNKNOWN")
 			continue
 		}
+
 		call(process[key], token[1:]...)
+
+		// Crypto-op post-call trace: read back the result register
+		if isCryptoOp(key) && len(token) > 1 {
+			regKey := token[1]
+			val := get(regKey)
+			traceDetail = fmt.Sprintf("args=%s → reg[%v]=%s", argsStr, regKey, traceValue(val))
+		}
+		tracePush(instrIdx, opcodeStr, traceDetail)
+
 		if result != "" {
-			log.Printf("sentinel_dx: [%d] RESULT set: %s", instrIdx, traceValue(result))
+			log.Printf("sentinel_dx: [%d] RESULT set — len=%d preview=%q", instrIdx, len(result), traceValue(result))
+			traceDump()
 			break
 		}
 	}
@@ -795,6 +852,20 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		log.Printf("sentinel_dx: VM executed %d instructions but result is EMPTY (no opcode 3 Resolve?)", len(tokenList))
 	} else {
 		log.Printf("sentinel_dx: dxToken output (len=%d): %s", len(result), result)
+		// Decode our own output to verify: is it plain JSON or encrypted binary?
+		decoded, _ := base64.StdEncoding.DecodeString(result)
+		isBinary := false
+		for _, b := range []byte(decoded) {
+			if b < 0x20 && b != '\n' && b != '\r' && b != '\t' {
+				isBinary = true
+				break
+			}
+		}
+		if isBinary {
+			log.Printf("sentinel_dx: SELF-CHECK: dxToken decodes to BINARY (len=%d) — encrypted ✓", len(decoded))
+		} else {
+			log.Printf("sentinel_dx: SELF-CHECK: dxToken decodes to PLAIN TEXT — NOT ENCRYPTED! preview=%q", string(decoded[:min(len(decoded), 120)]))
+		}
 	}
 	return result
 }
