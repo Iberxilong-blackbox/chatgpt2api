@@ -47,6 +47,7 @@ var settingEnvKeys = map[string]string{
 	"update_repo":                       "CHATGPT2API_UPDATE_REPO",
 	"update_github_token":               "CHATGPT2API_UPDATE_GITHUB_TOKEN",
 	"registration_enabled":              "CHATGPT2API_REGISTRATION_ENABLED",
+	"daily_registration_limit":          "CHATGPT2API_DAILY_REGISTRATION_LIMIT",
 	"login_page_image_url":              "CHATGPT2API_LOGIN_PAGE_IMAGE_URL",
 	"login_page_image_mode":             "CHATGPT2API_LOGIN_PAGE_IMAGE_MODE",
 	"login_page_image_zoom":             "CHATGPT2API_LOGIN_PAGE_IMAGE_ZOOM",
@@ -177,6 +178,14 @@ func (s *Store) AdminPassword() string {
 
 func (s *Store) RegistrationEnabled() bool {
 	return util.ToBool(s.settingValue("registration_enabled", false))
+}
+
+func (s *Store) DailyRegistrationLimit() int {
+	limit := intSetting(s.settingValue("daily_registration_limit", -1), -1)
+	if limit < -1 {
+		return -1
+	}
+	return limit
 }
 
 func (s *Store) RefreshAccountIntervalMinute() int {
@@ -461,6 +470,7 @@ func (s *Store) Get() map[string]any {
 	data["proxy"] = s.Proxy()
 	data["base_url"] = s.BaseURL()
 	data["registration_enabled"] = s.RegistrationEnabled()
+	data["daily_registration_limit"] = s.DailyRegistrationLimit()
 	linuxdo := s.LinuxDoOAuth()
 	data["linuxdo_enabled"] = linuxdo.Enabled
 	data["linuxdo_client_id"] = linuxdo.ClientID
@@ -521,6 +531,9 @@ func (s *Store) Update(data map[string]any) (map[string]any, error) {
 	}
 	if value, ok := next["daily_account_refresh_end_time"]; ok {
 		next["daily_account_refresh_end_time"] = normalizeDailyAccountRefreshTime(value, "05:00")
+	}
+	if value, ok := next["daily_registration_limit"]; ok {
+		next["daily_registration_limit"] = normalizeDailyRegistrationLimit(value)
 	}
 	next["update_repo"] = normalizeUpdateRepo(util.ValueOr(next["update_repo"], "ZyphrZero/chatgpt2api"))
 	if err := s.validateSettingsUpdateLocked(next); err != nil {
@@ -828,6 +841,14 @@ func normalizeImageTaskTimeoutSeconds(value any) int {
 		return maxImageTaskTimeoutSeconds
 	}
 	return seconds
+}
+
+func normalizeDailyRegistrationLimit(value any) int {
+	n := intSetting(value, -1)
+	if n < -1 {
+		return -1
+	}
+	return n
 }
 
 func normalizeNonNegativeInt(value any) int {

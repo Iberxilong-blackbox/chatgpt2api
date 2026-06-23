@@ -40,26 +40,29 @@ const (
 )
 
 type App struct {
-	config     *config.Store
-	auth       *service.AuthService
-	accounts   *service.AccountService
-	billing    *service.BillingService
-	logs       *service.LogService
-	logger     *service.Logger
-	proxy      *service.ProxyService
-	engine     *protocol.Engine
-	images     *service.ImageService
-	tasks      *service.ImageTaskService
-	announce   *service.AnnouncementService
-	prompts    *service.PromptFavoriteService
-	cpa        *service.CPAConfig
-	cpaImport  *service.CPAImportService
-	sub2       *service.Sub2APIConfig
-	sub2Import *service.Sub2APIService
-	register   *service.RegisterService
-	update     *service.UpdateService
-	cancel     context.CancelFunc
-	loginLimit *loginRateLimiter
+	config        *config.Store
+	auth          *service.AuthService
+	accounts      *service.AccountService
+	billing       *service.BillingService
+	logs          *service.LogService
+	logger        *service.Logger
+	proxy         *service.ProxyService
+	engine        *protocol.Engine
+	images        *service.ImageService
+	tasks         *service.ImageTaskService
+	announce      *service.AnnouncementService
+	prompts       *service.PromptFavoriteService
+	cpa           *service.CPAConfig
+	cpaImport     *service.CPAImportService
+	sub2          *service.Sub2APIConfig
+	sub2Import    *service.Sub2APIService
+	register      *service.RegisterService
+	registerGate  *service.RegistrationGateService
+	update        *service.UpdateService
+	cancel        context.CancelFunc
+	loginLimit    *loginRateLimiter
+	registerLimit *loginRateLimiter
+	registerMu    sync.Mutex
 }
 
 func NewApp() (*App, error) {
@@ -113,10 +116,11 @@ func NewApp() (*App, error) {
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	imageSessions := service.NewImageConversationSessionService(filepath.Join(cfg.DataDir, "image_conversation_sessions.json"), storageBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger, ImageConversationSessions: imageSessions}
-	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel, loginLimit: newLoginRateLimiter(8, 15*time.Minute)}
+	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel, loginLimit: newLoginRateLimiter(8, 15*time.Minute), registerLimit: newLoginRateLimiter(12, 30*time.Minute)}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(accounts, storageBackend)
+	app.registerGate = service.NewRegistrationGateService(storageBackend)
 	app.tasks = service.NewStoredImageTaskService(storageBackend,
 		func(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {
 			return app.runLoggedImageTask(ctx, identity, payload, "/api/creation-tasks/image-generations", "文生图", func(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -489,13 +493,65 @@ func (a *App) handleAccountRegister(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	identity, token, err := a.auth.RegisterPasswordUser(util.Clean(body["username"]), util.Clean(body["password"]), util.Clean(body["name"]))
+	identityID := util.Clean(body["identity_id"])
+	username := util.Clean(body["username"])
+	limitKey := registerRateLimitKey(r, identityID, username)
+	if a.registerLimit != nil && !a.registerLimit.Allow(limitKey, time.Now()) {
+		util.WriteError(w, http.StatusTooManyRequests, "too many registration attempts, try again later")
+		return
+	}
+
+	a.registerMu.Lock()
+	defer a.registerMu.Unlock()
+	if err := a.checkDailyRegistrationLimit(time.Now()); err != nil {
+		if a.registerLimit != nil {
+			a.registerLimit.RecordFailure(limitKey, time.Now())
+		}
+		util.WriteError(w, http.StatusTooManyRequests, err.Error())
+		return
+	}
+	if a.registerGate == nil {
+		util.WriteError(w, http.StatusBadRequest, "registration gate is unavailable")
+		return
+	}
+	if err := a.registerGate.ValidateAvailable(identityID); err != nil {
+		if a.registerLimit != nil {
+			a.registerLimit.RecordFailure(limitKey, time.Now())
+		}
+		util.WriteError(w, http.StatusBadRequest, service.ErrRegistrationIdentityInvalid.Error())
+		return
+	}
+	identity, token, err := a.auth.RegisterPasswordUser(username, util.Clean(body["password"]), util.Clean(body["name"]))
 	if err != nil {
+		if a.registerLimit != nil {
+			a.registerLimit.RecordFailure(limitKey, time.Now())
+		}
 		util.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if _, err := a.registerGate.Consume(identityID, identity.ID, strings.ToLower(strings.TrimSpace(username))); err != nil {
+		if a.registerLimit != nil {
+			a.registerLimit.RecordFailure(limitKey, time.Now())
+		}
+		util.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if a.registerLimit != nil {
+		a.registerLimit.Reset(limitKey)
+	}
 	setAuthSessionCookie(w, r, token)
 	a.writeLoginResponse(w, *identity, token)
+}
+
+func (a *App) checkDailyRegistrationLimit(now time.Time) error {
+	limit := a.config.DailyRegistrationLimit()
+	if limit < 0 {
+		return nil
+	}
+	if limit == 0 || a.registerGate.UsedCountOnLocalDate(now) >= limit {
+		return fmt.Errorf("今日注册名额已用完")
+	}
+	return nil
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {

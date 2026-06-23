@@ -59,6 +59,7 @@ func (a *App) routes() []appRoute {
 		subtree("/api/admin/announcements", a.handleAdminAnnouncements),
 		subtree("/api/admin/roles", a.handleAdminRoles),
 		subtree("/api/admin/users", a.handleAdminUsers),
+		subtree("/api/admin/registration-ids", a.handleAdminRegistrationIDs),
 		exact("", "/api/profile", a.handleProfile),
 		exact(http.MethodPost, "/api/profile/password", a.handleProfilePassword),
 		subtree("/api/profile/api-key", a.handleProfileAPIKey),

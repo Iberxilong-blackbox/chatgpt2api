@@ -306,7 +306,10 @@ func TestPasswordAccountLoginAndRegistrationToggle(t *testing.T) {
 		t.Fatalf("enable registration status = %d body = %s", res.Code, res.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"alice","password":"Password123","name":"Alice"}`))
+	if _, err := app.registerGate.Add("friend-alice", "Alice ID"); err != nil {
+		t.Fatalf("add registration identity: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"identity_id":"friend-alice","username":"alice","password":"Password123","name":"Alice"}`))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {
@@ -1425,7 +1428,10 @@ func TestRegistrationInitializesDefaultBillingForNewUser(t *testing.T) {
 		t.Fatalf("enable registration status = %d body = %s", res.Code, res.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"username":"alice","password":"Password123","name":"Alice"}`))
+	if _, err := app.registerGate.Add("friend-billing-alice", "Alice Billing ID"); err != nil {
+		t.Fatalf("add registration identity: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(`{"identity_id":"friend-billing-alice","username":"alice","password":"Password123","name":"Alice"}`))
 	res = httptest.NewRecorder()
 	app.Handler().ServeHTTP(res, req)
 	if res.Code != http.StatusOK {

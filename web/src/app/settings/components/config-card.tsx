@@ -198,6 +198,9 @@ export function ConfigCard() {
   const setRegistrationEnabled = useSettingsStore(
     (state) => state.setRegistrationEnabled,
   );
+  const setDailyRegistrationLimit = useSettingsStore(
+    (state) => state.setDailyRegistrationLimit,
+  );
   const saveConfig = useSettingsStore((state) => state.saveConfig);
   const defaultBillingType = config?.default_billing_type || "standard";
 
@@ -559,12 +562,28 @@ export function ConfigCard() {
             title="账号入口"
             tip="开启后登录页会显示账号注册入口，新账号默认绑定普通用户角色。"
           />
-          <div className="grid gap-2 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <ConfigOption
               checked={Boolean(config?.registration_enabled)}
               onCheckedChange={setRegistrationEnabled}
               label="开放账号注册"
             />
+            <Field className="gap-1.5">
+              <ConfigFieldLabel htmlFor="settings-daily-registration-limit">
+                每日注册上限
+              </ConfigFieldLabel>
+              <Input
+                id="settings-daily-registration-limit"
+                type="number"
+                min={-1}
+                value={String(config?.daily_registration_limit ?? -1)}
+                onChange={(event) => setDailyRegistrationLimit(event.target.value)}
+                className={settingsInputClassName}
+              />
+              <p className="text-xs leading-5 text-muted-foreground">
+                -1 不限制，0 表示今天不允许注册，正数为每天最多注册数。
+              </p>
+            </Field>
           </div>
         </section>
 
@@ -591,3 +610,4 @@ export function ConfigCard() {
     </SettingsCard>
   );
 }
+

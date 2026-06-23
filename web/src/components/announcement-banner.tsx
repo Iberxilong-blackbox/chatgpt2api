@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, Megaphone } from "lucide-react";
 
 import { AnnouncementMarkdown } from "@/components/announcement-markdown";
@@ -8,6 +8,28 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fetchVisibleAnnouncements, type Announcement, type AnnouncementTarget } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+function readKey(target: AnnouncementTarget) {
+  return `read-announcements-${target}`;
+}
+
+function loadRead(target: AnnouncementTarget): Set<string> {
+  try {
+    const raw = localStorage.getItem(readKey(target));
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as string[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveRead(target: AnnouncementTarget, ids: Set<string>) {
+  try {
+    localStorage.setItem(readKey(target), JSON.stringify([...ids]));
+  } catch {
+    // localStorage full or unavailable
+  }
+}
 
 export function AnnouncementNotifications({
   target,
@@ -17,6 +39,8 @@ export function AnnouncementNotifications({
   className?: string;
 }) {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [read, setRead] = useState<Set<string>>(() => loadRead(target));
+  const prevIdsRef = useRef<string>("");
 
   useEffect(() => {
     let active = true;
@@ -40,12 +64,35 @@ export function AnnouncementNotifications({
     };
   }, [target]);
 
+  const unreadCount = useMemo(
+    () => announcements.filter((a) => !read.has(a.id)).length,
+    [announcements, read],
+  );
+
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (open && announcements.length > 0) {
+        const ids = announcements.map((a) => a.id).sort().join(",");
+        if (ids === prevIdsRef.current) return;
+        prevIdsRef.current = ids;
+
+        setRead((prev) => {
+          const next = new Set(prev);
+          for (const a of announcements) next.add(a.id);
+          saveRead(target, next);
+          return next;
+        });
+      }
+    },
+    [announcements, target],
+  );
+
   if (announcements.length === 0) {
     return null;
   }
 
   return (
-    <Popover>
+    <Popover onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -54,12 +101,14 @@ export function AnnouncementNotifications({
             "relative size-10 rounded-full border-amber-200 bg-amber-50/95 p-0 text-amber-800 shadow-sm hover:bg-amber-100 hover:text-amber-900",
             className,
           )}
-          aria-label={`查看 ${announcements.length} 条公告`}
+          aria-label={unreadCount > 0 ? `查看 ${unreadCount} 条未读公告` : "查看公告"}
         >
           <Bell className="size-4" />
-          <span className="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full bg-amber-600 px-1.5 text-[10px] font-semibold leading-5 text-white">
-            {announcements.length}
-          </span>
+          {unreadCount > 0 && (
+            <span className="absolute -right-1 -top-1 flex min-w-5 items-center justify-center rounded-full bg-amber-600 px-1.5 text-[10px] font-semibold leading-5 text-white">
+              {unreadCount}
+            </span>
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-[min(calc(100vw-2rem),400px)] p-0">

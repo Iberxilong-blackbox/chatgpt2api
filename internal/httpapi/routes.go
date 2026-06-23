@@ -1763,3 +1763,73 @@ func splitPath(path string) []string {
 	}
 	return strings.Split(trimmed, "/")
 }
+
+func (a *App) handleAdminRegistrationIDs(w http.ResponseWriter, r *http.Request) {
+	identity, ok := a.requireIdentity(w, r, "")
+	if !ok {
+		return
+	}
+	if identity.Role != service.AuthRoleAdmin {
+		util.WriteError(w, http.StatusForbidden, "permission denied")
+		return
+	}
+	base := "/api/admin/registration-ids"
+	if r.URL.Path == base {
+		switch r.Method {
+		case http.MethodGet:
+			util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.registerGate.List()})
+		case http.MethodPost:
+			body, err := readJSONMap(r)
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, "invalid json body")
+				return
+			}
+			item, err := a.registerGate.Add(util.Clean(body["identity_id"]), util.Clean(body["label"]))
+			if err != nil {
+				util.WriteError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": a.registerGate.List()})
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+	parts := splitPath(r.URL.Path)
+	if len(parts) != 4 || parts[0] != "api" || parts[1] != "admin" || parts[2] != "registration-ids" {
+		http.NotFound(w, r)
+		return
+	}
+	id := parts[3]
+	switch r.Method {
+	case http.MethodPatch, http.MethodPost:
+		body, err := readJSONMap(r)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		item, err := a.registerGate.Update(id, body)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err.Error() == "identity record not found" {
+				status = http.StatusNotFound
+			}
+			util.WriteError(w, status, err.Error())
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"item": item, "items": a.registerGate.List()})
+	case http.MethodDelete:
+		deleted, err := a.registerGate.Delete(id)
+		if err != nil {
+			util.WriteError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if !deleted {
+			util.WriteError(w, http.StatusNotFound, "identity record not found")
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.registerGate.List()})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}

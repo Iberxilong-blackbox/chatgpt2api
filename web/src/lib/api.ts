@@ -249,6 +249,7 @@ export type SettingsConfig = {
   proxy: string;
   base_url?: string;
   registration_enabled?: boolean;
+  daily_registration_limit?: number | string;
   refresh_account_interval_minute?: number | string;
   daily_account_refresh_enabled?: boolean;
   daily_account_refresh_start_time?: string;
@@ -751,10 +752,10 @@ export async function login(username: string, password: string) {
   });
 }
 
-export async function registerAccount(username: string, password: string, name?: string) {
+export async function registerAccount(username: string, password: string, name?: string, identityId?: string) {
   return httpRequest<LoginResponse>("/auth/register", {
     method: "POST",
-    body: { username, password, name: name ?? "" },
+    body: { identity_id: identityId ?? "", username, password, name: name ?? "" },
     redirectOnUnauthorized: false,
   });
 }
@@ -1385,6 +1386,48 @@ function managedUserPath(userId: string) {
   return `/api/admin/users/${encodeURIComponent(userId)}`;
 }
 
+
+export type RegistrationIdentity = {
+  id: string;
+  identity_id: string;
+  label?: string;
+  enabled: boolean;
+  used: boolean;
+  used_by_user_id?: string;
+  used_by_username?: string;
+  used_user_deleted?: boolean;
+  used_at?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+function registrationIdentityPath(id: string) {
+  return `/api/admin/registration-ids/${encodeURIComponent(id)}`;
+}
+
+export async function fetchRegistrationIdentities() {
+  return httpRequest<{ items: RegistrationIdentity[] }>("/api/admin/registration-ids");
+}
+
+export async function createRegistrationIdentity(payload: { identity_id: string; label?: string }) {
+  return httpRequest<{ item: RegistrationIdentity; items: RegistrationIdentity[] }>("/api/admin/registration-ids", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export async function updateRegistrationIdentity(id: string, updates: { label?: string; enabled?: boolean }) {
+  return httpRequest<{ item: RegistrationIdentity; items: RegistrationIdentity[] }>(registrationIdentityPath(id), {
+    method: "PATCH",
+    body: updates,
+  });
+}
+
+export async function deleteRegistrationIdentity(id: string) {
+  return httpRequest<{ items: RegistrationIdentity[] }>(registrationIdentityPath(id), {
+    method: "DELETE",
+  });
+}
 export async function fetchManagedUsers(query: ManagedUsersQuery = {}) {
   const params = new URLSearchParams();
   if (query.page) params.set("page", String(query.page));
@@ -1757,3 +1800,4 @@ export async function testProxy(url?: string) {
     body: { url: url ?? "" },
   });
 }
+

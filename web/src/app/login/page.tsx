@@ -46,6 +46,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [identityId, setIdentityId] = useState("");
   const [isRegisterMode, setIsRegisterMode] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [linuxDoEnabled, setLinuxDoEnabled] = useState(false);
@@ -78,6 +79,7 @@ export default function LoginPage() {
   const handleSubmit = async () => {
     const normalizedUsername = username.trim();
     const normalizedName = displayName.trim();
+    const normalizedIdentityId = identityId.trim();
     if (!normalizedUsername) {
       toast.error("请输入用户名");
       return;
@@ -86,11 +88,15 @@ export default function LoginPage() {
       toast.error("请输入密码");
       return;
     }
+    if (isRegisterMode && !normalizedIdentityId) {
+      toast.error("请输入身份 ID");
+      return;
+    }
 
     setIsSubmitting(true);
     try {
       const data = isRegisterMode
-        ? await registerAccount(normalizedUsername, password, normalizedName)
+        ? await registerAccount(normalizedUsername, password, normalizedName, normalizedIdentityId)
         : await login(normalizedUsername, password);
       const token = String(data.token || "").trim();
       if (!token) {
@@ -230,6 +236,24 @@ export default function LoginPage() {
               >
                 <div className="min-h-0 overflow-visible">
                   <div className="flex flex-col gap-2">
+                    <label htmlFor="login-identity-id" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
+                      身份 ID
+                    </label>
+                    <div className="relative">
+                      <ShieldCheck className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
+                      <Input
+                        id="login-identity-id"
+                        type="text"
+                        autoComplete="off"
+                        tabIndex={isRegisterMode ? undefined : -1}
+                        value={identityId}
+                        onChange={(event) => setIdentityId(event.target.value)}
+                        placeholder="请输入管理员提供的 ID"
+                        className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2">
                     <label htmlFor="login-display-name" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
                       昵称
                     </label>
@@ -338,3 +362,7 @@ export default function LoginPage() {
     </div>
   );
 }
+
+
+
+

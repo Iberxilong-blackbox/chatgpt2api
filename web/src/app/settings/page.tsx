@@ -14,6 +14,7 @@ import { ImportBrowserDialog } from "./components/import-browser-dialog";
 import { LinuxDoLoginCard } from "./components/linuxdo-login-card";
 import { LogGovernanceCard } from "./components/log-governance-card";
 import { LoginPageImageCard } from "./components/login-page-image-card";
+import { RegistrationIdentitiesCard } from "./components/registration-identities-card";
 import { SettingsHeader } from "./components/settings-header";
 import { Sub2APIConnections } from "./components/sub2api-connections";
 import { VersionUpdateCard } from "./components/version-update-card";
@@ -83,6 +84,11 @@ function AdminSettingsPageContent({
         <SettingsMasonryItem>
           <LoginPageImageCard />
         </SettingsMasonryItem>
+        {canManageSystem ? (
+          <SettingsMasonryItem>
+            <RegistrationIdentitiesCard />
+          </SettingsMasonryItem>
+        ) : null}
         <SettingsMasonryItem>
           <AnnouncementsCard />
         </SettingsMasonryItem>
@@ -112,3 +118,4 @@ export default function SettingsPage() {
 
   return <AdminSettingsPageContent canManageSystem={session.role === "admin"} />;
 }
+

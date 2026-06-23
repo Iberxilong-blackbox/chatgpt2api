@@ -88,3 +88,13 @@ func remoteAddrHost(r *http.Request) string {
 	}
 	return r.RemoteAddr
 }
+
+func registerRateLimitKey(r *http.Request, identityID, username string) string {
+	ip := clientIP(r)
+	if ip == "" {
+		ip = remoteAddrHost(r)
+	}
+	identityID = strings.TrimSpace(identityID)
+	username = strings.TrimSpace(username)
+	return ip + ":" + identityID + ":" + username
+}
