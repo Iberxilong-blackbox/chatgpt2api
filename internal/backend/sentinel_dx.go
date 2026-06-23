@@ -46,6 +46,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	log.Printf("sentinel_dx: VM start — %d instructions, proofKey len=%d", len(tokenList), len(proofKey))
 
 	process := map[any]any{}
+	simWindow := &turnstileOrderedMap{} // simulated browser window for Reflect.set
 	start := time.Now()
 	result := ""
 	instrIdx := 0
@@ -123,7 +124,19 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if len(args) == 0 {
 			return
 		}
-		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(args[0])))
+		v := get(args[0])
+		if v == nil {
+			// If register is uninitialized:
+			// - Numeric key (float64) → real register ref → fall back to simWindow
+			// - String key → may be a literal value → use directly
+			if _, isRegKey := args[0].(float64); isRegKey {
+				log.Printf("sentinel_dx: [%d]  op3 resolve — reg %v is nil, falling back to simWindow", instrIdx, args[0])
+				v = simWindow.toJSON()
+			} else {
+				v = args[0]
+			}
+		}
+		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(v)))
 	})
 
 	// [4] Reject / error — log and output error as btoa
@@ -195,8 +208,17 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		}
 		log.Printf("sentinel_dx: [%d]  op7 call target=%v", instrIdx, traceValue(target))
 		if target == "window.Reflect.set" && len(values) >= 3 {
+			// Browser Reflect.set(target, key, value) — target may be:
+			// - the string "window" (register 10 value) → write to simWindow
+			// - an *turnstileOrderedMap (Object.create result) → write to that map
 			if obj, ok := values[0].(*turnstileOrderedMap); ok {
 				obj.add(turnstileToString(values[1]), values[2])
+				log.Printf("sentinel_dx: [%d]  Reflect.set → orderedMap[%q] = %v", instrIdx, turnstileToString(values[1]), traceValue(values[2]))
+			} else if values[0] == "window" {
+				simWindow.add(turnstileToString(values[1]), values[2])
+				log.Printf("sentinel_dx: [%d]  Reflect.set → simWindow[%q] = %v", instrIdx, turnstileToString(values[1]), traceValue(values[2]))
+			} else {
+				log.Printf("sentinel_dx: [%d]  Reflect.set → UNHANDLED target type %T", instrIdx, values[0])
 			}
 			return
 		}
@@ -287,6 +309,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		case "window.performance.now":
 			elapsed := float64(time.Since(start).Nanoseconds()) + rand.Float64()
 			set(args[0], elapsed/1e6)
+		case "window.Date.now":
+			set(args[0], float64(time.Now().UnixMilli()))
 		case "window.Object.create":
 			set(args[0], &turnstileOrderedMap{})
 		case "window.Object.keys":

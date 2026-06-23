@@ -29,6 +29,27 @@ func (m *turnstileOrderedMap) add(key string, value any) {
 	m.values[key] = value
 }
 
+// toJSON serializes the ordered map to a JSON object string,
+// preserving insertion order of keys.
+func (m *turnstileOrderedMap) toJSON() string {
+	if m == nil || len(m.keys) == 0 {
+		return "{}"
+	}
+	// Simple ordered JSON — build manually to preserve key order
+	out := "{"
+	for i, k := range m.keys {
+		if i > 0 {
+			out += ","
+		}
+		v := m.values[k]
+		vBytes, _ := json.Marshal(v)
+		kBytes, _ := json.Marshal(k)
+		out += string(kBytes) + ":" + string(vBytes)
+	}
+	out += "}"
+	return out
+}
+
 func solveTurnstileToken(dx, p string) string {
 	decoded, err := base64.StdEncoding.DecodeString(dx)
 	if err != nil {
