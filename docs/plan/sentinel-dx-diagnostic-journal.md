@@ -589,8 +589,9 @@ GNt(r);      // 解密 dx，用 FNt.get(r) = e
 
 - [x] 分析 anything-analyzer 工具能力，设计推进方案
 - [x] Phase 1：CDP dump opcode table + WeakMap 状态
-- [x] Phase 2：Go VM 扩展 opcode 表 1-24 → 0-35
-- [ ] Phase 3：对比浏览器 vs 我们的 VM 输出
+- [x] Phase 2：Go VM 扩展 opcode 表 1-24 → 0-35 → committed `fa1a7d4`（未部署）
+- [ ] Phase 2.5：部署到服务器，观察真实流量中的 `unknown opcode` 和 XOR 稳定性
+- [ ] Phase 3：对比浏览器 vs 我们的 VM 输出（被第八轮发现阻塞）
 
 ---
 
@@ -740,9 +741,10 @@ result 变量同样保存/恢复，确保子 VM 的 Resolve 不会污染外层�
 
 ### 待验证
 
-- [ ] **部署后观察**：是否还有 `unknown opcode` 日志？
+- [ ] **部署后观察**：是否还有 `unknown opcode` 日志？opcode 0-35 全覆盖后应该消除
 - [ ] **dxToken_produced 稳定性**：XOR 密钥（`sourceP`）是否始终与 `collector_dx` 匹配？
-- [ ] Phase 3：浏览器 vs VM 输出交叉验证
+  - 如仍出现浮点 opcode（XOR 乱码），说明密钥不总是 `sourceP`
+- [ ] Phase 3：浏览器 vs VM 输出交叉验证（见第八轮）
 
 ### 当前 opcode 覆盖：0-35 全部实现（31,32 是 SDK 空白）
 
@@ -783,3 +785,133 @@ result 变量同样保存/恢复，确保子 VM 的 Resolve 不会污染外层�
 | 33 | 乘法 | ✅ |
 | 34 | Promise resolve | ✅ |
 | 35 | 除法 | ✅ |
+
+---
+
+## 第八轮：Phase 3 交叉验证初探 — 受阻 (2026-06-23)
+
+### 目标
+
+执行 Phase 3 交叉验证：获取浏览器 finalize 请求中的 `so` 值，与服务器日志中的 `dxToken` 对比。
+
+### 操作
+
+在 anything-analyzer 的 `dx-phase1` session 中发送对话 "hello"，触发 prepare → PoW → dx解密 → finalize 流程。检查 finalize 请求的 payload。
+
+### 发现：浏览器 finalize **没有 `so` 字段**
+
+```
+finalize payload: {
+  "prepare_token": "gAAAAABqOfnk...",
+  "proofofwork": "gAAAAAB...",
+  "turnstile": "..."
+}
+// ← 没有 "so" 字段！
+```
+
+### 可能原因
+
+| # | 假设 | 判断 |
+|---|------|------|
+| A | prepare 响应没有 `so.collector_dx`（该次请求不需要 dx） | 需要检查 prepare 响应 |
+| B | SDK 处理了 `so.collector_dx` 但输出为空（VM 执行失败或被跳过） | SDK 的 dx 解密发生在 PoW **之前**（Round 4），时序不同可能导致密钥未就绪 |
+| C | prepare 响应有 `collector_dx`，SDK 解密成功了，但 `so` 值发到了其他字段 | 可能性低 |
+| D | 当前 SDK 版本 (20260423af3c) 的 `so` 字段行为与之前不同 | SDK 持续迭代中 |
+
+### 关键线索：SDK dx 时序 vs 我们的时序
+
+回顾 Round 4 的 `yFt` 时序：
+
+```
+SDK:  NNt(r, sourceP) → POST /prepare → NNt(r, sourceP) → GNt(r) → dx解密 → ... → POST /finalize
+                                                    ↑ PoW 还没开始！
+我们的代码:
+      POST /prepare → PoW解算 → dx解密(用sourceP) → POST /finalize {so: dxToken}
+```
+
+**关键差异**：SDK 的 dx 解密发生在 PoW **之前**。如果 SDK 的 `collector_dx` 在那个时候还没有被填充（比如是异步的），或者 `sourceP` 在那时还不完整，SDK 就会跳过 `so` 处理。这可能是浏览器 finalize 没有 `so` 的原因之一。
+
+另外注意：我们的代码在 PoW **之后** 解密 dx——用的是同一个 `sourceP`，只是时序不同。如果 `sourceP` 在 prepare 响应回来之后仍然有效（应该是的，它是 bootstrap 阶段生成的），那我们的时序实际上更安全。
+
+### 行动
+
+- [ ] 从 anything-analyzer 的 prepare 响应中提取 `so` 字段，确认 `collector_dx` 是否存在
+- [ ] 如果存在：用该 `collector_dx` + `sourceP` 在本地跑 Go VM，检查输出
+- [ ] 如果不存在：尝试触发需要 dx 的请求（可能需要登录态、特定操作类型等）
+
+---
+
+---
+
+## 第九轮：Phase 2 部署 + 首次真实流量观察 (2026-06-23 11:30)
+
+### 日志
+
+```
+sentinel_dx: VM start — 280 instructions, proofKey len=599
+sentinel_dx: unknown opcode 45 (instruction: [45.15 57.65 11.27 95.82 5.05])
+sentinel_dx: dxToken output (len=8): NTQuNzI=
+sentinel_dx: so.required=true, collector_dx_present=true, pow_required=true, proofToken_empty=false, dxToken_produced=true
+```
+
+### 分析
+
+**表面上看**：280 条指令解析、VM 执行完成、`dxToken_produced=true`。但实际上：
+
+1. **`dxToken` = `NTQuNzI=` → base64 decode = `"54.72"`** — 一个 4 字符的浮点数字符串。真正的 dxToken 应该是一个包含浏览器环境数据的大型 JSON → base64（几百到几千字节），而不是 8 字节的小字符串。
+
+2. **opcode `45.15` 不存在** — SDK opcode dispatch table 最大到 35，且全部是整数。浮点 `45.15` 只能是 XOR 解密后产生的随机字节。
+
+3. **结论：XOR 密钥不匹配。** 280 条"指令"全部是垃圾数据，VM 恰好碰到了 opcode 3 (Resolve) 产出了一个无意义的 `"54.72"`。
+
+### 全部观测数据汇总
+
+| 时间 | 指令数 | 问题 | proofKey len | 结果 |
+|------|--------|------|:---:|------|
+| 06/22 20:23 | 283 | 无 | 583 | ✅ 真正的 dxToken |
+| 06/22 21:01 | 264 | opcode 50,82,59,73,85,29 | 595 | ❌ XOR 乱码 |
+| 06/22 21:04 | 289 | opcode 54,45,27 | 591 | ❌ XOR 乱码 |
+| 06/22 21:05 | 280 | 无未知但 result 为空 | 591 | ❌ XOR 正确但 VM 无输出 |
+| 06/23 11:30 | 280 | opcode 45 | 599 | ❌ XOR 乱码 |
+
+**5 次请求，仅 2 次 XOR 密钥正确（40%）。** 这表明：
+
+- `sourceP` **有时**是正确的 XOR 密钥（Round 4, 20:23 完美成功）
+- `sourceP` **有时不是**（浮点 opcode = 乱码）
+- 密钥正确性不取决于 proofKey 长度（583, 591 都成功过，591, 599 也都失败过）
+
+### 根因假设更新
+
+之前的假设（Round 4）认为 XOR 密钥固定 = `sourceP`。新数据表明这个结论需要修正：
+
+| # | 假设 | 说明 |
+|---|------|------|
+| **A** | `sourceP` 在 bootstrap 和 prepare 之间被刷新 | 浏览器 SDK 中 p token 有过期时间，可能在我们发起 prepare 时已过期，SDK 生成了新 token。我们存的是旧的/新的，与 prepare 请求里的 `p` 不一致 |
+| **B** | 不同账号/bot 的密钥方案不同 | 某些 bot 用 `sourceP` 加密，某些用新方案（proof token 或其他），服务器混合下发 |
+| **C** | SDK 版本迭代：新版 SDK 换了密钥方案 | 我们逆向的是 `20260423af3c`，但服务器可能给某些请求下发了更新的版本 |
+
+**关键验证点**：我们发起 prepare 请求时带的 `p` 字段值，与后来用于 XOR 解密的 `sourceP`，是否是**同一个字符串**？如果不是，密钥当然不匹配。
+
+### 核心发现：问题不是 opcode 表，是 XOR 密钥稳定性
+
+Opcode 覆盖 0-35 在 XOR 正确时是够用的（20:23 证明了这点）。但当 XOR 密钥错时，opcode 100 也没用——解出来的指令本身就是随机字节。
+
+### 行动
+
+- [ ] 加诊断日志：XOR 解密后文本预览（前 100 字符），区分"合法 JSON 指令" vs "乱码"
+- [ ] 加诊断日志：prepare 请求中实际发送的 `p` 值 vs 用于 XOR 的 `sourceP`，确认是否一致
+- [ ] 继续收集更多数据点（10-20 条），找成功/失败的规律
+
+---
+
+## 当前总体状态 (2026-06-23)
+
+| 阶段 | 状态 | 说明 |
+|------|:---:|------|
+| XOR 密钥确认 = sourceP | ⚠️ | 静态分析+WeakMap hook 确认 SDK 用 sourceP，但我们的代码中 sourceP 有时与 prepare 请求的 p 不一致 |
+| 完整 opcode 表提取 (0-35) | ✅ | 从 sdk.js (20260423af3c) 静态提取 |
+| Go VM opcode 扩展至 0-35 | ✅ | committed `fa1a7d4`，编译/测试通过 |
+| 部署到服务器 | ✅ | 第九轮部署，已产生新日志 |
+| 真实流量验证（XOR 密钥稳定性） | 🔴 | **核心瓶颈**：5 次中仅 2 次解密正确 (40%) |
+| 真实流量验证（opcode 覆盖） | ⏳ | XOR 正确时 opcode 0-35 够用（20:23 验证），XOR 错时无法评估 |
+| 交叉验证（浏览器 vs VM） | ⏳ | 第八轮受阻 + XOR 不稳定前的交叉验证意义有限 |

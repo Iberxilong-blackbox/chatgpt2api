@@ -23,6 +23,16 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		return ""
 	}
 	xorResult := xorTurnstileString(string(decoded), proofKey)
+
+	// Diagnostic: preview the XOR-decrypted text to distinguish "valid JSON instructions"
+	// (starts with "[[") from XOR key mismatch garbage (binary noise like "kc0\x17...").
+	// This is the single most important diagnostic for the XOR stability problem.
+	preview := xorResult
+	if len(preview) > 120 {
+		preview = preview[:120]
+	}
+	log.Printf("sentinel_dx: xorResult preview: %q", preview)
+
 	var tokenList [][]any
 	if err := json.Unmarshal([]byte(xorResult), &tokenList); err != nil {
 		preview := xorResult

@@ -508,11 +508,18 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 			dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), sourceP)
 		}
 		// Diagnostic logging — confirms whether OpenAI is sending dx challenges.
-		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, pow_required=%v, proofToken_empty=%v, dxToken_produced=%v",
+		// Also log sourceP prefix + length to track XOR key consistency across requests.
+		sourcePPreview := sourceP
+		if len(sourcePPreview) > 15 {
+			sourcePPreview = sourcePPreview[:15]
+		}
+		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, pow_required=%v, proofToken_empty=%v, dxToken_produced=%v, sourceP=%q...(len=%d)",
 			collectorDxPresent,
 			util.ToBool(proof["required"]),
 			proofToken == "",
-			dxToken != "")
+			dxToken != "",
+			sourcePPreview,
+			len(sourceP))
 	}
 
 	return proofToken, turnstileToken, dxToken, nil
