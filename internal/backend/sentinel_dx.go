@@ -32,6 +32,64 @@ func logSOEvent(event string, detail map[string]any) {
 	f.Write(append(data, '\n'))
 }
 
+// initSimWindow pre-populates the simulated browser window object with
+// realistic __oai_so_* values before the VM starts executing.
+// This mimics the work done by sentinel SDK event listeners in a real browser.
+func initSimWindow(w *turnstileOrderedMap) {
+	// Type A: Null fields — event listeners registered but never triggered
+	nullFields := []string{
+		"__oai_so_h", "__oai_so_hi", "__oai_so_hp", "__oai_so_hw",
+		"__oai_so_ht", "__oai_so_hc",
+		"__oai_so_s", "__oai_so_t0",
+		"__oai_so_k", "__oai_so_kp",
+		"__oai_so_p", "__oai_so_pc",
+		"__oai_so_fs", "__oai_so_fs2", "__oai_so_fn",
+		"__oai_so_bc", "__oai_so_bm",
+	}
+	for _, f := range nullFields {
+		w.add(f, nil)
+	}
+
+	// Type B: Interaction data fields — synthesize realistic values
+	wl := 500.0 + rand.Float64()*2000.0 // window load perf.now: 0.5-2.5s
+	w.add("__oai_so_wl", wl)
+
+	m := wl + 5000.0 + rand.Float64()*295000.0 // mouse move: 5-300s after load
+	w.add("__oai_so_m", m)
+
+	ss := wl + 1000.0 + rand.Float64()*(m-wl-1000.0) // scroll: 1s to mouse-time
+	w.add("__oai_so_ss", ss)
+
+	pageLoadDateNow := float64(time.Now().UnixMilli()) - wl
+	w.add("__oai_so_ss2", pageLoadDateNow+ss)
+
+	sn := float64(10 + rand.Intn(191)) // scroll count: 10-200
+	w.add("__oai_so_sn", sn)
+
+	cs := wl + 500.0 + rand.Float64()*(ss-wl-500.0) // click: 0.5s to scroll-time
+	w.add("__oai_so_cs", cs)
+	w.add("__oai_so_cs2", pageLoadDateNow+cs)
+
+	cn := float64(3 + rand.Intn(98)) // click count: 3-100
+	w.add("__oai_so_cn", cn)
+
+	w.add("__oai_so_st", float64(rand.Intn(1001))) // scrollTop: 0-1000
+	w.add("__oai_so_sw", float64(rand.Intn(100)))  // scrollWidth: 0-99
+	w.add("__oai_so_sp", float64(0))               // scrollParent: always 0
+	w.add("__oai_so_spt", float64(rand.Intn(5)))   // scrollParentTop: 0-4
+
+	sx0 := float64(rand.Intn(1920)) // start mouse x: 0-1919
+	sy0 := float64(rand.Intn(1080)) // start mouse y: 0-1079
+	w.add("__oai_so_sx0", sx0)
+	w.add("__oai_so_sy0", sy0)
+	w.add("__oai_so_lx", sx0+rand.Float64()*200.0-100.0) // last x: start ± 100
+	w.add("__oai_so_ly", sy0+rand.Float64()*200.0-100.0) // last y: start ± 100
+
+	w.add("__oai_so_i", sn+cn+float64(5+rand.Intn(46))) // input total: sn+cn+5~50
+	w.add("__oai_so_we", float64(1+rand.Intn(20)))      // window events: 1-20
+	w.add("__oai_so_wb", float64(rand.Intn(4)))          // blur: 0-3
+}
+
 // solveSentinelDxToken decrypts and executes a Sentinel dx VM challenge.
 // dx is the encrypted VM bytecode from the prepare response (so.collector_dx).
 // proofKey is the raw PoW answer (stripped of "gAAAAAB" prefix and "~S" suffix),
@@ -68,6 +126,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 	process := map[any]any{}
 	simWindow := &turnstileOrderedMap{} // simulated browser window for Reflect.set
+	initSimWindow(simWindow)
 	start := time.Now()
 	result := ""
 	instrIdx := 0
