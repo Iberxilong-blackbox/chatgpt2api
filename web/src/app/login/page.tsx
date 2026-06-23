@@ -173,7 +173,7 @@ export default function LoginPage() {
               />
               <div className="grid min-w-0 leading-none">
                 <div className="truncate text-sm font-semibold tracking-[-0.02em] text-[#222222] dark:text-white">
-                  {appMeta.app_title || "chatgpt2api"}
+                  {appMeta.app_title || "Z-art"}
                 </div>
                 <div className="truncate text-[10px] font-medium tracking-[0.28em] text-[#8e8e93] uppercase dark:text-white/50">
                   {appMeta.project_name && appMeta.project_name !== appMeta.app_title ? appMeta.project_name : "Control Center"}
@@ -192,8 +192,8 @@ export default function LoginPage() {
                 </h1>
                 <p className="max-w-[340px] text-sm leading-6 text-[#45515e] transition-opacity duration-200 dark:text-white/62">
                   {isRegisterMode
-                    ? `创建账号后进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`
-                    : `使用账号和密码进入 ${appMeta.app_title || "chatgpt2api"} 控制台。`}
+                    ? `创建账号后进入 ${appMeta.app_title || "Z-art"} 控制台。`
+                    : `使用账号和密码进入 ${appMeta.app_title || "Z-art"} 控制台。`}
                 </p>
               </div>
             </div>
