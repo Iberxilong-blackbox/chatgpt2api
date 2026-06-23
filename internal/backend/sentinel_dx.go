@@ -173,6 +173,18 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			fn(args...)
 		}
 	}
+	isZeroValue := func(v any) bool {
+		if v == nil {
+			return true
+		}
+		switch x := v.(type) {
+		case float64:
+			return x == 0
+		case string:
+			return x == ""
+		}
+		return false
+	}
 
 	// Opcode table — mirrors the Turnstile VM (shared SentinelSDK instruction set).
 	// Opcode 16 uses proofKey (PoW answer) instead of the legacy p token.
@@ -288,7 +300,20 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			if obj, ok := values[0].(*turnstileOrderedMap); ok {
 				obj.add(turnstileToString(values[1]), values[2])
 			} else if values[0] == "window" {
-				simWindow.add(turnstileToString(values[1]), values[2])
+				key := turnstileToString(values[1])
+				// Preserve pre-filled simWindow values from initSimWindow.
+				// The VM Reflect.set is SDK initialization (writes 0/nil).
+				// initSimWindow simulates browser events that happen AFTER init.
+				// Don't let initialization clobber simulated event data with zeros.
+				if existing, exists := simWindow.values[key]; exists {
+					if !isZeroValue(existing) && isZeroValue(values[2]) {
+						return // preserve non-zero simulated value
+					}
+					if existing == nil && isZeroValue(values[2]) {
+						return // preserve null semantic (nil -> null in JSON)
+					}
+				}
+				simWindow.add(key, values[2])
 			}
 			return
 		}

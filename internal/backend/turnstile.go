@@ -42,7 +42,10 @@ func (m *turnstileOrderedMap) toJSON() string {
 			out += ","
 		}
 		v := m.values[k]
-		vBytes, _ := json.Marshal(v)
+		vBytes, err := json.Marshal(v)
+		if err != nil || len(vBytes) == 0 {
+			vBytes = []byte("null")
+		}
 		kBytes, _ := json.Marshal(k)
 		out += string(kBytes) + ":" + string(vBytes)
 	}
