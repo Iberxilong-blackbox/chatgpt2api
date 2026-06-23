@@ -170,6 +170,11 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	}
 	regWriteLog := map[any][]regWriteEntry{}
 
+	// Pre-scanned registers that opcode 3 will read — populated later by pre-scan.
+	// Declared here so the set() closure can reference them for real-time watch logging.
+	watchedRegs := map[any]bool{}
+	var watchedRegsOrder []any
+
 	get := func(value any) any {
 		return process[turnstileKey(value)]
 	}
@@ -177,6 +182,10 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		k := turnstileKey(key)
 		process[k] = value
 		regWriteLog[k] = append(regWriteLog[k], regWriteEntry{idx: instrIdx, val: value})
+		// Real-time watch: if this register is the opcode 3 target, log immediately
+		if watchedRegs[k] {
+			log.Printf("sentinel_dx: WATCH [%d] SET reg(%v) = %s", instrIdx, k, traceValue(value))
+		}
 	}
 	call := func(value any, args ...any) {
 		if fn, ok := value.(turnstileFunc); ok {
@@ -228,16 +237,46 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		regKey := args[0]
 		v := get(regKey)
 
-		// Detailed trace: what register did opcode 3 read, and its write history
-		log.Printf("sentinel_dx: opcode 3 FINAL — regKey=%v value=%s", regKey, traceValue(v))
-		k := turnstileKey(regKey)
-		if writes, ok := regWriteLog[k]; ok {
-			log.Printf("sentinel_dx: opcode 3 — register %v write history (%d writes):", regKey, len(writes))
+		// Determine the actual register key for trace purposes.
+		// If opcode 3 is called indirectly via opcode 7, args[0] is already
+		// the resolved value (nil), not the register key. Use pre-scanned info.
+		lookupKey := turnstileKey(regKey)
+		if regKey == nil && len(watchedRegsOrder) > 0 {
+			lookupKey = watchedRegsOrder[0]
+			log.Printf("sentinel_dx: opcode 3 FINAL — regKey=<nil> (resolved by caller), pre-scanned target=%v, value=%s",
+				lookupKey, traceValue(v))
+		} else {
+			log.Printf("sentinel_dx: opcode 3 FINAL — regKey=%v value=%s", regKey, traceValue(v))
+		}
+
+		// Dump write history for the target register
+		if writes, ok := regWriteLog[lookupKey]; ok {
+			log.Printf("sentinel_dx: opcode 3 — register %v write history (%d writes):", lookupKey, len(writes))
 			for _, w := range writes {
 				log.Printf("sentinel_dx:   [%d] = %s", w.idx, traceValue(w.val))
 			}
 		} else {
-			log.Printf("sentinel_dx: opcode 3 — register %v was NEVER written via set()!", regKey)
+			log.Printf("sentinel_dx: opcode 3 — register %v was NEVER written via set()!", lookupKey)
+		}
+
+		// If the target register is nil, scan ALL registers for string values
+		// to find where the XOR chain fragments actually ended up.
+		if v == nil {
+			log.Printf("sentinel_dx: opcode 3 — target register is nil, scanning all registers for string values...")
+			stringRegs := map[any]string{}
+			for k, val := range process {
+				if s, ok := val.(string); ok && len(s) > 0 {
+					stringRegs[k] = s
+				}
+			}
+			log.Printf("sentinel_dx: opcode 3 — %d register(s) contain non-empty strings:", len(stringRegs))
+			for k, s := range stringRegs {
+				preview := s
+				if len(preview) > 60 {
+					preview = preview[:60]
+				}
+				log.Printf("sentinel_dx:   reg[%v] = %q", k, preview)
+			}
 		}
 
 		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(v)))
@@ -809,6 +848,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 	// Pre-scan: find all instructions that reference opcode 3 (the final output)
 	// to understand which register(s) should hold the XOR-chain encrypted result.
+	// Populates watchedRegs / watchedRegsOrder so set() can log writes in real-time.
 	log.Printf("sentinel_dx: pre-scan — searching for opcode 3 references in %d instructions", len(tokenList))
 	for i, token := range tokenList {
 		if len(token) < 2 {
@@ -816,13 +856,24 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		}
 		// Direct call: token = [3, regKey, ...]
 		if turnstileToFloat(token[0]) == 3 {
+			wr := turnstileKey(token[1])
 			log.Printf("sentinel_dx: pre-scan [%d] DIRECT op3: regKey=%v", i, token[1])
+			if !watchedRegs[wr] {
+				watchedRegs[wr] = true
+				watchedRegsOrder = append(watchedRegsOrder, wr)
+			}
 		}
 		// Indirect via op7: token = [op7_key, 3, regKey, ...]
 		if len(token) >= 3 && turnstileToFloat(token[1]) == 3 {
+			wr := turnstileKey(token[2])
 			log.Printf("sentinel_dx: pre-scan [%d] INDIRECT op3 via %v: regKey=%v", i, token[0], token[2])
+			if !watchedRegs[wr] {
+				watchedRegs[wr] = true
+				watchedRegsOrder = append(watchedRegsOrder, wr)
+			}
 		}
 	}
+	log.Printf("sentinel_dx: watching %d register(s) for opcode 3: %v", len(watchedRegsOrder), watchedRegsOrder)
 
 	// Execution loop
 	unknownOps := map[any]bool{}
