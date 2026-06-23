@@ -715,8 +715,19 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		// Capture current process map for the closure
 		capturedProcess := process
 
+		// Trace: log function definition
+		bodyPreview := ""
+		if len(body) > 0 {
+			bodyPreview = fmt.Sprintf(" first_inst=%v", body[0])
+		}
+		log.Printf("sentinel_dx: op30 DEFINE — destReg=%v returnReg=%v bindings=%d body=%d instrs%s",
+			destReg, returnReg, len(bindings), len(body), bodyPreview)
+
 		// Create the callable
 		createdFn := turnstileFunc(func(callArgs ...any) {
+			// Trace function invocation
+			log.Printf("sentinel_dx: op30-fn CALL destReg=%v returnReg=%v — %d args, %d body instrs",
+				destReg, returnReg, len(callArgs), len(body))
 			// Save state
 			savedTokens := capturedProcess[float64(9)]
 			savedResult := result
@@ -761,6 +772,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			if subResult != "" {
 				set(returnReg, subResult) // traced write
 			}
+			log.Printf("sentinel_dx: op30-fn RETURN destReg=%v returnReg=%v — subResult=%s, returnReg value=%s",
+				destReg, returnReg, traceValue(subResult), traceValue(get(returnReg)))
 		})
 
 		process[destReg] = createdFn
