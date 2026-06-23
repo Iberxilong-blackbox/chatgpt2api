@@ -283,6 +283,54 @@ sudo ./deploy/update.sh --env
 
 > 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离，进一步提升了运行安全性。
 
+#### 5. 允许设置页保存配置（可选）
+
+默认 `deploy/chatgpt2api.service` 会把系统目录设为只读，并且只允许写入 `/opt/chatgpt2api/data`：
+
+```ini
+ProtectSystem=strict
+ReadWritePaths=/opt/chatgpt2api/data
+ReadOnlyPaths=/opt/chatgpt2api/.env
+```
+
+这种配置更安全，但后台“设置”页面无法保存写入 `.env` 的全局配置，保存时可能出现：
+
+```json
+{"detail":{"error":"open /opt/chatgpt2api/.env: read-only file system"}}
+```
+
+如果希望设置页可以保存配置，同时降低配置接口被滥用的风险，推荐采用下面的折中方案：
+
+- systemd 只放开 `/opt/chatgpt2api/.env` 的写权限；
+- Nginx 只允许你的固定公网 IP 访问 `/api/settings`、`/api/settings/login-page-image` 和 `/api/proxy`；
+- 普通用户入口、注册入口和创作接口仍按正常方式对外提供。
+
+先创建 systemd override：
+
+```bash
+sudo systemctl edit chatgpt2api
+```
+
+填入：
+
+```ini
+[Service]
+ReadOnlyPaths=
+ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/.env
+```
+
+然后应用配置：
+
+```bash
+sudo systemctl daemon-reload
+sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/.env
+sudo chmod 640 /opt/chatgpt2api/.env
+sudo systemctl restart chatgpt2api
+sudo systemctl cat chatgpt2api
+```
+
+> 重要：放开 `.env` 写权限后，务必按下方 Nginx 配置限制 `/api/settings` 和 `/api/proxy`。如果你的公网 IP 经常变化，不适合做 IP 白名单，建议保持默认只读设计，通过修改源码目录 `.env` 后执行 `sudo ./deploy/update.sh --env` 来更新配置。
+
 ---
 
 ## Nginx 反向代理配置
@@ -429,6 +477,67 @@ server {
         proxy_read_timeout 600s;
     }
 
+    # 设置接口：如果允许 systemd 写 /opt/chatgpt2api/.env，必须限制到你的管理 IP
+    location = /api/settings {
+        allow 1.2.3.4;    # ← 替换为你的 IP
+        deny all;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
+    location = /api/settings/login-page-image {
+        allow 1.2.3.4;    # ← 替换为你的 IP
+        deny all;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
+    location = /api/proxy {
+        allow 1.2.3.4;    # ← 替换为你的 IP
+        deny all;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
+    location = /api/proxy/test {
+        allow 1.2.3.4;    # ← 替换为你的 IP
+        deny all;
+
+        proxy_pass http://127.0.0.1:8822;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 600s;
+    }
+
     # ==============================================================
     # 其余所有请求走 Go 后端
     # ==============================================================
@@ -480,7 +589,7 @@ certbot 执行完毕后会自动：
 | `proxy_read_timeout` | **必须** | 生图默认 300s 超时（可配置 `CHATGPT2API_IMAGE_TASK_TIMEOUT_SECONDS`），nginx 超时必须大于该值 |
 | `client_max_body_size` | 建议 | 生图编辑（`/v1/images/edits`）会上传参考图，需要足够大 |
 | `limit_req_zone` | 建议 | 登录接口 3 次/分钟，防暴力破解 |
-| IP 白名单 | 建议 | `/auth/login` 和 `/api/admin/` 仅允许你的 IP 访问 |
+| IP 白名单 | 建议 | `/auth/login`、`/api/admin/`、`/api/settings`、`/api/proxy` 仅允许你的 IP 访问 |
 | `server_tokens off` | 建议 | 隐藏 nginx 版本号，增加攻击者指纹识别难度 |
 
 > HTTPS 配置见上方的 certbot 步骤。更多安全加固措施（fail2ban、防火墙、SSH 加固等）详见 [安全加固指南](security-hardening-guide.md)。
