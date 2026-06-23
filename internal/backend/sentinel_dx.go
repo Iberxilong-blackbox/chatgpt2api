@@ -3,6 +3,7 @@ package backend
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -47,11 +48,50 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	process := map[any]any{}
 	start := time.Now()
 	result := ""
+	instrIdx := 0
+
+	// traceValue returns a compact one-line summary of a VM value for trace logging.
+	traceValue := func(v any) string {
+		if v == nil {
+			return "nil"
+		}
+		switch x := v.(type) {
+		case turnstileFunc:
+			return "fn"
+		case string:
+			if len(x) > 40 {
+				return fmt.Sprintf("str(%q...)", x[:40])
+			}
+			return fmt.Sprintf("str(%q)", x)
+		case float64:
+			return fmt.Sprintf("num(%v)", x)
+		case bool:
+			return fmt.Sprintf("bool(%v)", x)
+		case []any:
+			return fmt.Sprintf("arr(%d)", len(x))
+		case []string:
+			return fmt.Sprintf("strs(%d)", len(x))
+		case *turnstileOrderedMap:
+			return fmt.Sprintf("orderedMap(keys=%d)", len(x.keys))
+		case map[any]any:
+			return "map[self]"
+		default:
+			return fmt.Sprintf("%T", v)
+		}
+	}
+
 	get := func(value any) any {
-		return process[turnstileKey(value)]
+		k := turnstileKey(value)
+		v := process[k]
+		if v == nil {
+			log.Printf("sentinel_dx: [%d]  get %v → nil (UNINITIALIZED)", instrIdx, k)
+		}
+		return v
 	}
 	set := func(key any, value any) {
-		process[turnstileKey(key)] = value
+		k := turnstileKey(key)
+		process[k] = value
+		log.Printf("sentinel_dx: [%d]  set %v = %s", instrIdx, k, traceValue(value))
 	}
 	call := func(value any, args ...any) {
 		if fn, ok := value.(turnstileFunc); ok {
@@ -153,6 +193,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		for _, arg := range args[1:] {
 			values = append(values, get(arg))
 		}
+		log.Printf("sentinel_dx: [%d]  op7 call target=%v", instrIdx, traceValue(target))
 		if target == "window.Reflect.set" && len(values) >= 3 {
 			if obj, ok := values[0].(*turnstileOrderedMap); ok {
 				obj.add(turnstileToString(values[1]), values[2])
@@ -288,9 +329,13 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 	// [20] Conditional call (equality check)
 	process[float64(20)] = turnstileFunc(func(args ...any) {
-		if len(args) < 3 || !reflect.DeepEqual(get(args[0]), get(args[1])) {
+		a := get(args[0])
+		b := get(args[1])
+		if len(args) < 3 || !reflect.DeepEqual(a, b) {
+			log.Printf("sentinel_dx: [%d]  op20 EQ? %v == %v → false (skip)", instrIdx, traceValue(a), traceValue(b))
 			return
 		}
+		log.Printf("sentinel_dx: [%d]  op20 EQ? %v == %v → true (call)", instrIdx, traceValue(a), traceValue(b))
 		callArgs := make([]any, 0, len(args)-3)
 		for _, arg := range args[3:] {
 			callArgs = append(callArgs, get(arg))
@@ -306,20 +351,27 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		a := turnstileToFloat(get(args[0]))
 		b := turnstileToFloat(get(args[1]))
 		threshold := turnstileToFloat(get(args[2]))
-		if math.Abs(a-b) > threshold {
+		diff := math.Abs(a - b)
+		if diff > threshold {
+			log.Printf("sentinel_dx: [%d]  op21 |%v-%v|=%v > %v → call", instrIdx, a, b, diff, threshold)
 			callArgs := make([]any, 0, len(args)-4)
 			for _, arg := range args[4:] {
 				callArgs = append(callArgs, get(arg))
 			}
 			call(get(args[3]), callArgs...)
+		} else {
+			log.Printf("sentinel_dx: [%d]  op21 |%v-%v|=%v <= %v → skip", instrIdx, a, b, diff, threshold)
 		}
 	})
 
 	// [23] Call with raw (unresolved) arguments
 	process[float64(23)] = turnstileFunc(func(args ...any) {
-		if len(args) < 2 || get(args[0]) == nil {
+		v := get(args[0])
+		if len(args) < 2 || v == nil {
+			log.Printf("sentinel_dx: [%d]  op23 null-check: %v == nil → skip", instrIdx, traceValue(v))
 			return
 		}
+		log.Printf("sentinel_dx: [%d]  op23 null-check: value present → call", instrIdx)
 		call(get(args[1]), args[2:]...)
 	})
 
@@ -342,6 +394,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if len(args) == 0 {
 			return
 		}
+		log.Printf("sentinel_dx: [%d]  op0 recursive entry", instrIdx)
 		encrypted := turnstileToString(args[0])
 		key := turnstileToString(process[float64(16)])
 		decoded, err := base64.StdEncoding.DecodeString(encrypted)
@@ -387,6 +440,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if !ok {
 			return
 		}
+		log.Printf("sentinel_dx: [%d]  op22 sub-VM enter (%d sub-instructions)", instrIdx, len(subInstructions))
 		// Convert []any → [][]any
 		subTokens := make([][]any, 0, len(subInstructions))
 		for _, inst := range subInstructions {
@@ -415,6 +469,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		set(destReg, result)
 		result = savedResult
 		process[float64(9)] = savedTokens
+		log.Printf("sentinel_dx: [%d]  op22 sub-VM exit, result=%s", instrIdx, traceValue(get(destReg)))
 	})
 
 	// [25] Noop (mt)
@@ -591,15 +646,21 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if len(token) == 0 {
 			continue
 		}
+		instrIdx++
 		key := turnstileKey(token[0])
 		if _, exists := process[key]; !exists {
 			if !unknownOps[key] {
 				unknownOps[key] = true
-				log.Printf("sentinel_dx: unknown opcode %v (instruction: %v)", key, token)
+				log.Printf("sentinel_dx: [%d] UNKNOWN key=%v args=%v", instrIdx, key, token[1:])
 			}
 			continue
 		}
+		log.Printf("sentinel_dx: [%d] dispatch key=%v args=%v", instrIdx, key, token[1:])
 		call(process[key], token[1:]...)
+		if result != "" {
+			log.Printf("sentinel_dx: [%d] RESULT set: %s", instrIdx, traceValue(result))
+			break
+		}
 	}
 	if result == "" {
 		log.Printf("sentinel_dx: VM executed %d instructions but result is EMPTY (no opcode 3 Resolve?)", len(tokenList))

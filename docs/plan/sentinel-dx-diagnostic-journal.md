@@ -7,6 +7,30 @@
 
 ---
 
+## Phase 1 总结 (2026-06-22 ~ 2026-06-23)
+
+经过 11 轮实验追查，以下结论已稳定，后续工作转入 Phase 2 [`sentinel-dx-vm-verification`](sentinel-dx-vm-verification.md)。
+
+### 已确认
+
+| 结论 | 证据 |
+|------|------|
+| **XOR 密钥 = sourceP**（legacy p token，`gAAAAAC...`），非 proof token | Round 4 静态分析 `yFt` 时序 + Round 7 WeakMap hook |
+| **SDK 版本 20260423af3c**，新旧两套 sentinel 共存 | Round 7 sdk.js 提取 |
+| **双 VM 架构**：Sentinel VM（解密 collector_dx）和 Turnstile VM（解密 turnstile.dx）**共享同一套 opcode 指令集** | Round 7 sdk.js 静态提取 |
+| **完整 opcode 表：0-35**（31,32 是 SDK 空白） | Round 7 sdk.js dispatch table |
+| **指令格式**：`[opcode|regKey, ...args]`，At 是**单 Map 双用途**——同时存 opcode handler（整数 key 0-35）和用户寄存器（浮点数 key 如 90.67） | Round 11 VM loop 还原 |
+| **Go VM opcode 已扩展至 0-35**（全部实现） | Round 7 Phase 2 |
+| **Go VM 寄存器系统已修复**：`map[int]any` → `map[any]any`，浮点 key 不再被 `int()` 截断 | Round 12 (本轮) |
+
+### 当前瓶颈
+
+opcode handler 的**语义**与浏览器 SDK 不完全一致。即使寄存器派发正确、零 unknown opcode，VM 仍然走不到 opcode 3 (Resolve)，3/3 `result EMPTY`。
+
+具体差异点需要在 Phase 2 中通过**浏览器 vs Go VM 的逐指令寄存器对比**来定位。
+
+---
+
 ## 第一轮：线上日志观察 (2026-06-22)
 
 ### 现象
