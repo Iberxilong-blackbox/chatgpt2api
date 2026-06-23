@@ -174,7 +174,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	// Declared here so the set() closure can reference them for real-time watch logging.
 	watchedRegs := map[any]bool{}
 	var watchedRegsOrder []any
-	lastCryptoDest := any(nil) // destination register of the last opcode 1 (XOR) write
 
 	get := func(value any) any {
 		return process[turnstileKey(value)]
@@ -215,7 +214,6 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			return
 		}
 		set(args[0], xorTurnstileString(turnstileToString(get(args[0])), turnstileToString(get(args[1]))))
-		lastCryptoDest = args[0] // track for opcode 3 fallback
 	})
 
 	// [2] Set literal value
@@ -281,17 +279,28 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			}
 		}
 
-		// Fallback chain: if the target register is nil, try last XOR dest, then simWindow
-		if v == nil && lastCryptoDest != nil {
-			fallbackVal := get(lastCryptoDest)
-			log.Printf("sentinel_dx: opcode 3 — target nil, trying lastCryptoDest=%v value=%s",
-				lastCryptoDest, traceValue(fallbackVal))
-			if fallbackVal != nil {
-				v = fallbackVal
+		// Fallback chain: if the target register is nil, find the best crypto output
+		if v == nil {
+			// Tier 2: scan all registers for the longest base64 string (likely the
+			// encrypted accumulator that the XOR chain built). Skip short pad fragments.
+			var bestKey any
+			var bestVal string
+			for k, val := range process {
+				if s, ok := val.(string); ok && len(s) > len(bestVal) {
+					// Heuristic: real crypto output is 20+ chars, pad fragments are <12
+					if len(s) >= 20 {
+						bestKey, bestVal = k, s
+					}
+				}
+			}
+			if bestVal != "" {
+				log.Printf("sentinel_dx: opcode 3 — target nil, longest crypto string is reg[%v] len=%d preview=%q",
+					bestKey, len(bestVal), bestVal[:min(len(bestVal), 60)])
+				v = bestVal
 			}
 		}
 		if v == nil {
-			log.Printf("sentinel_dx: opcode 3 — all register sources nil, falling back to XOR(simWindow, proofKey)")
+			log.Printf("sentinel_dx: opcode 3 — no crypto string found, falling back to XOR(simWindow, proofKey)")
 			jsonStr := simWindow.toJSON()
 			log.Printf("sentinel_dx: opcode 3 — simWindow JSON len=%d preview=%q", len(jsonStr), jsonStr[:min(len(jsonStr), 120)])
 			v = xorTurnstileString(jsonStr, proofKey)
