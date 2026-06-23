@@ -205,7 +205,8 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		set(args[0], args[1])
 	})
 
-	// [3] Resolve / finalize: base64-encode value as result
+	// [3] Resolve / finalize: XOR-encrypt then base64-encode as result.
+	// Browser SDK flow: JSON.stringify(so) → XOR(proofKey) → btoa → turnstile
 	process[float64(3)] = turnstileFunc(func(args ...any) {
 		if len(args) == 0 {
 			return
@@ -223,7 +224,9 @@ func solveSentinelDxToken(dx, proofKey string) string {
 				v = args[0] // literal string value
 			}
 		}
-		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(v)))
+		jsonStr := turnstileToString(v)
+		encrypted := xorTurnstileString(jsonStr, proofKey)
+		result = base64.StdEncoding.EncodeToString([]byte(encrypted))
 	})
 
 	// [4] Reject / error — log and output error as btoa
