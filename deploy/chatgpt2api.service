@@ -20,8 +20,9 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/chatgpt2api/data
-ReadOnlyPaths=/opt/chatgpt2api/.env
+# Allow runtime data writes and settings-page .env updates.
+# Keep Nginx IP allowlists on /api/settings and /api/proxy when exposing the admin UI.
+ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/.env
 
 # 日志
 StandardOutput=journal

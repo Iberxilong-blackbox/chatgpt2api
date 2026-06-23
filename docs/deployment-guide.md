@@ -281,47 +281,27 @@ sudo ./deploy/update.sh
 sudo ./deploy/update.sh --env
 ```
 
-> 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离，进一步提升了运行安全性。
+> 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离。当前模板只额外允许写入 `/opt/chatgpt2api/data` 和 `/opt/chatgpt2api/.env`，用于运行数据和设置页保存配置。
 
-#### 5. 允许设置页保存配置（可选）
+#### 5. 设置页保存配置的安全边界
 
-默认 `deploy/chatgpt2api.service` 会把系统目录设为只读，并且只允许写入 `/opt/chatgpt2api/data`：
+`deploy/chatgpt2api.service` 会把系统目录设为只读，并且只允许写入运行所需路径：
 
 ```ini
 ProtectSystem=strict
-ReadWritePaths=/opt/chatgpt2api/data
-ReadOnlyPaths=/opt/chatgpt2api/.env
+ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/.env
 ```
 
-这种配置更安全，但后台“设置”页面无法保存写入 `.env` 的全局配置，保存时可能出现：
+其中 `/opt/chatgpt2api/.env` 是为了允许后台“设置”页面保存全局配置。如果你的服务器之前已经安装过旧版 service 文件，仍然可能遇到：
 
 ```json
 {"detail":{"error":"open /opt/chatgpt2api/.env: read-only file system"}}
 ```
 
-如果希望设置页可以保存配置，同时降低配置接口被滥用的风险，推荐采用下面的折中方案：
-
-- systemd 只放开 `/opt/chatgpt2api/.env` 的写权限；
-- Nginx 只允许你的固定公网 IP 访问 `/api/settings`、`/api/settings/login-page-image` 和 `/api/proxy`；
-- 普通用户入口、注册入口和创作接口仍按正常方式对外提供。
-
-先创建 systemd override：
+此时重新复制服务文件并重启：
 
 ```bash
-sudo systemctl edit chatgpt2api
-```
-
-填入：
-
-```ini
-[Service]
-ReadOnlyPaths=
-ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/.env
-```
-
-然后应用配置：
-
-```bash
+sudo cp deploy/chatgpt2api.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo chown chatgpt2api:chatgpt2api /opt/chatgpt2api/.env
 sudo chmod 640 /opt/chatgpt2api/.env
@@ -329,7 +309,7 @@ sudo systemctl restart chatgpt2api
 sudo systemctl cat chatgpt2api
 ```
 
-> 重要：放开 `.env` 写权限后，务必按下方 Nginx 配置限制 `/api/settings` 和 `/api/proxy`。如果你的公网 IP 经常变化，不适合做 IP 白名单，建议保持默认只读设计，通过修改源码目录 `.env` 后执行 `sudo ./deploy/update.sh --env` 来更新配置。
+> 重要：允许写 `.env` 后，务必按下方 Nginx 配置限制 `/api/settings` 和 `/api/proxy`。如果你的公网 IP 经常变化，不适合做 IP 白名单，可以把 service 改回只读 `.env`，通过修改源码目录 `.env` 后执行 `sudo ./deploy/update.sh --env` 来更新配置。
 
 ---
 
