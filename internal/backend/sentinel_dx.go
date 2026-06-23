@@ -124,16 +124,18 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		if len(args) == 0 {
 			return
 		}
+		// Resolve register reference. args[0] may be:
+		// - float64 register key (direct dispatch) → get() resolves it
+		// - nil (already resolved by opcode 7 indirection) → skip get()
+		// - string literal (edge case) → skip get()
 		v := get(args[0])
 		if v == nil {
-			// If register is uninitialized:
-			// - Numeric key (float64) → real register ref → fall back to simWindow
-			// - String key → may be a literal value → use directly
-			if _, isRegKey := args[0].(float64); isRegKey {
+			// Register is uninitialized — fall back to simulated window
+			if _, isRegKey := args[0].(float64); isRegKey || args[0] == nil {
 				log.Printf("sentinel_dx: [%d]  op3 resolve — reg %v is nil, falling back to simWindow", instrIdx, args[0])
 				v = simWindow.toJSON()
 			} else {
-				v = args[0]
+				v = args[0] // literal string value
 			}
 		}
 		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(v)))

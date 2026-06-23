@@ -152,22 +152,69 @@ if target == "window.Reflect.set" && len(values) >= 3 {
 
 #### 最终结果
 
-指令 [265] `opcode 3` 读 register 55.31 → nil → `turnstileToString(nil)` = `"undefined"` → base64 → `dW5kZWZpbmVk`
+指令 [265] `dispatch key=57.69 args=[3 55.31]` — **非直接调 opcode 3！**
+
+**执行路径追踪**：
+```
+[265] dispatch key=57.69 args=[3 55.31]
+      ↓ reg 57.69 = opcode 7 handler (由 [216] set 57.69=fn 设定)
+      ↓ opcode 7: target = get(3) = opcode 3 handler (fn)
+      ↓           values = [get(55.31)] = [nil]
+      ↓           → log "op7 call target=fn"
+      ↓           → call(opcode_3_handler, [nil])
+      ↓ opcode 3: args = [nil  (← 已被 opcode 7 解析为 nil，不是 55.31！)]
+      ↓           turnstileToString(nil) = "undefined"
+      ↓           base64("undefined") = "dW5kZWZpbmVk"
+```
+
+⚠️ **Round 4 初版分析错误**：曾认为 opcode 3 直接用 `args[0]=55.31`，实际上是通过 opcode 7 间接调用，`args[0]` 已是解析后的 `nil`。这解释了为什么 `turnstileToString(args[0])`（现行代码）能产出 `"dW5kZWZpbmVd"` —— 不是服务器二进制不一致，而是间接调用路径。
+
+**根因链**：
+1. `window.Reflect.set` 全空操作 → simWindow 无数据 → 子 VM 函数无有效输出
+2. Register 55.31 在 [33] 设为 nil 后再未被写入
+3. [265] 通过 opcode 7 间接调 opcode 3，传入 nil
+4. opcode 3 收到 nil 产出 `"undefined"` → 无有效 dxToken
 
 ```
 turnstileToString(nil) → case nil: return "undefined"
 base64("undefined") = "dW5kZWZpbmVk"
 ```
 
-✅ **trace 日志方案验证成功**：从 265 条指令中精确锁定了 2 个具体 bug，不需要 Node.js 本地 SDK VM。
+✅ **trace 日志方案验证成功**：从 265 条指令中精确锁定了 2 个具体 bug + 1 个间接调度路径 bug。
+
+---
+
+### Round 5 修复 (2026-06-23) 🔧
+
+针对 Round 4 发现的 2 个 bug + 间接调用路径，实施以下修改：
+
+#### 修改 1: simWindow + Reflect.set 修复 (`sentinel_dx.go`)
+
+- 新增 `simWindow := &turnstileOrderedMap{}` 全局模拟窗口对象
+- opcode 7 的 `window.Reflect.set` 处理器：增加 `values[0] == "window"` 分支，写入 simWindow
+- 增加 Reflect.set 写入的 trace 日志
+
+#### 修改 2: Date.now 补全 (`sentinel_dx.go`)
+
+- opcode 17 switch 新增 `"window.Date.now"` case，返回 `time.Now().UnixMilli()`
+
+#### 修改 3: opcode 3 nil 回退 (`sentinel_dx.go`)
+
+- opcode 3 改用 `get(args[0])` 解析寄存器引用
+- 当 `v == nil` 且 `args[0]` 是 float64（寄存器 key）或 nil（已被 opcode 7 解析）→ 回退到 `simWindow.toJSON()`
+- 当 `v == nil` 且 `args[0]` 是 string → 当作字面量使用（兼容测试用例）
+
+#### 修改 4: toJSON 方法 (`turnstile.go`)
+
+- `turnstileOrderedMap` 新增 `toJSON()` 方法，按插入顺序序列化为 JSON 字符串
 
 ---
 
 ### 下一步修复方向
 
-1. **模拟 `window` 对象**：创建一个 `*turnstileOrderedMap` 作为 simulated global window。当 opcode 7 遇到 `window.Reflect.set` 且 target 对象是 `"window"`（register 10）时，写入 simulated window 而非检查类型。
-2. **补充 `window.Date.now`**：在 opcode 17 switch 中增加 `"window.Date.now"` case，返回当前 Unix 毫秒时间戳。
-3. **审计其他浏览器 API**：检查 trace 中出现的所有 op7 call target 是否都已有 handler，确保无遗漏。
+1. **部署验证**：部署新代码到服务器，触发对话，检查 dxToken 是否不再是 `"dW5kZWZpbmVk"`
+2. **如果 simWindow JSON 不是正确格式**：需要对照 sdk.js 确认 so 对象的序列化方式
+3. **如果 dxToken 格式正确但被服务端拒绝**：可能需要精确模拟更多浏览器 API（如 `window.Date.now` 的确定性时间戳）
 
 ---
 
@@ -180,8 +227,9 @@ base64("undefined") = "dW5kZWZpbmVk"
 | 寄存器系统 | ✅ | `map[any]any` |
 | 浏览器交叉验证 | ❌ | 否决 — 该账号 prepare 不下发 collector_dx |
 | Node.js 本地 SDK VM | 💤 | 降级为备选，sdk.js 源码已提取用于逐 opcode 对比 |
-| Go VM trace 日志 | ✅ | Round 4 分析完成，定位到 2 个具体 bug |
-| **Bug 1: Reflect.set 类型不匹配** | 🐛 | opcode 7 — `values[0]` 是 string 非 orderedMap |
-| **Bug 2: Date.now 未实现** | 🐛 | opcode 17 — switch 缺 case |
-| **Window 对象模拟** | 🔜 | 修复 Bug 1 的前提 |
-| Opcode handler 语义修复 | 🔄 | Round 5 修复中 |
+| Go VM trace 日志 | ✅ | Round 4 分析完成，定位到 2+1 个 bug |
+| **Bug 1: Reflect.set 类型不匹配** | ✅ | Round 5 修复 — opcode 7 支持 string "window" target |
+| **Bug 2: Date.now 未实现** | ✅ | Round 5 修复 — opcode 17 新增 case |
+| **Bug 3: opcode 3 间接调用 nil** | ✅ | Round 5 修复 — nil 回退到 simWindow.toJSON() |
+| **Window 对象模拟** | ✅ | simWindow + toJSON() 已实现 |
+| Opcode handler 语义修复 | 🔄 | Round 5 代码完成，待部署验证 |
