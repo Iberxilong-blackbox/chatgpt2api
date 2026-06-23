@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"reflect"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,15 @@ func logSOEvent(event string, detail map[string]any) {
 	}
 	data, _ := json.Marshal(entry)
 	f.Write(append(data, '\n'))
+}
+
+// cryptoRegKeys returns register keys from cryptoWrittenRegs for diagnostic logging.
+func cryptoRegKeys(m map[any]bool) []any {
+	keys := make([]any, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // initSimWindow pre-populates the simulated browser window object with
@@ -175,6 +185,12 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	watchedRegs := map[any]bool{}
 	var watchedRegsOrder []any
 
+	// cryptoWrittenRegs tracks registers that received XOR (opcode 1) or btoa (opcode 19)
+	// results. The XOR accumulator is built through successive XOR+btoa iterations,
+	// so it will be in this set. Input strings like proofKey are set once and
+	// never touched by crypto ops — they stay out of this set.
+	cryptoWrittenRegs := map[any]bool{}
+
 	get := func(value any) any {
 		return process[turnstileKey(value)]
 	}
@@ -281,26 +297,47 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 		// Fallback chain: if the target register is nil, find the best crypto output
 		if v == nil {
-			// Tier 2: scan all registers for the longest base64 string (likely the
-			// encrypted accumulator that the XOR chain built). Skip short pad fragments.
+			log.Printf("sentinel_dx: opcode 3 — cryptoWrittenRegs has %d entries: %v",
+				len(cryptoWrittenRegs), cryptoRegKeys(cryptoWrittenRegs))
+
+			// Tier 2a: prefer registers that were written by XOR (op1) or btoa (op19).
+			// The XOR accumulator is built through successive XOR+btoa iterations;
+			// input strings like proofKey are never touched by crypto ops.
 			var bestKey any
 			var bestVal string
-			for k, val := range process {
-				if s, ok := val.(string); ok && len(s) > len(bestVal) {
-					// Heuristic: real crypto output is 20+ chars, pad fragments are <12
-					if len(s) >= 20 {
-						bestKey, bestVal = k, s
-					}
+			for k := range cryptoWrittenRegs {
+				val := process[k]
+				if s, ok := val.(string); ok && len(s) >= 20 && len(s) > len(bestVal) {
+					bestKey, bestVal = k, s
 				}
 			}
 			if bestVal != "" {
-				log.Printf("sentinel_dx: opcode 3 — target nil, longest crypto string is reg[%v] len=%d preview=%q",
+				log.Printf("sentinel_dx: opcode 3 — Tier 2a hit: crypto-written reg[%v] len=%d preview=%q",
 					bestKey, len(bestVal), bestVal[:min(len(bestVal), 60)])
 				v = bestVal
+			} else {
+				// Tier 2b: no crypto-written string found — scan all registers
+				// but exclude known input patterns (fernet tokens >200 chars).
+				log.Printf("sentinel_dx: opcode 3 — Tier 2a missed, scanning all registers (excluding inputs)...")
+				for k, val := range process {
+					if s, ok := val.(string); ok && len(s) >= 20 && len(s) > len(bestVal) {
+						// Skip fernet tokens (proofKey inputs): they start with "gAAAAAC"
+						// and are typically >200 chars, not crypto accumulators.
+						if strings.HasPrefix(s, "gAAAAAC") && len(s) > 200 {
+							continue
+						}
+						bestKey, bestVal = k, s
+					}
+				}
+				if bestVal != "" {
+					log.Printf("sentinel_dx: opcode 3 — Tier 2b hit: reg[%v] len=%d preview=%q",
+						bestKey, len(bestVal), bestVal[:min(len(bestVal), 60)])
+					v = bestVal
+				}
 			}
 		}
 		if v == nil {
-			log.Printf("sentinel_dx: opcode 3 — no crypto string found, falling back to XOR(simWindow, proofKey)")
+			log.Printf("sentinel_dx: opcode 3 — Tier 2 missed, falling back to XOR(simWindow, proofKey)")
 			jsonStr := simWindow.toJSON()
 			log.Printf("sentinel_dx: opcode 3 — simWindow JSON len=%d preview=%q", len(jsonStr), jsonStr[:min(len(jsonStr), 120)])
 			v = xorTurnstileString(jsonStr, proofKey)
@@ -964,6 +1001,12 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			regKey := token[1]
 			val := get(regKey)
 			traceDetail = fmt.Sprintf("args=%s → reg[%v]=%s", argsStr, regKey, traceValue(val))
+			// Track registers written by XOR (op1) or btoa (op19) —
+			// these are candidates for the XOR accumulator in Tier 2 fallback.
+			k := turnstileToFloat(key)
+			if k == 1 || k == 19 {
+				cryptoWrittenRegs[turnstileKey(regKey)] = true
+			}
 		}
 		tracePush(instrIdx, opcodeStr, traceDetail)
 
