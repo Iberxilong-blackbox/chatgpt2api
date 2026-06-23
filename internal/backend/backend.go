@@ -472,13 +472,19 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		return ChatRequirements{}, err
 	}
 	token := util.Clean(finalizePayload2["token"])
+	soToken := util.Clean(finalizePayload2["so_token"])
+	// Diagnostic: log finalize response to track whether server accepts our "so" (dxToken).
+	// If so_token is non-empty, the server acknowledged our so and will expect
+	// OpenAI-Sentinel-SO-Token header on subsequent conversation requests.
+	log.Printf("sentinel_dx: finalize response — status=%d, token_present=%v, so_token_present=%v",
+		resp2.StatusCode, token != "", soToken != "")
 	if token == "" {
 		if c.AccessToken != "" {
 			return ChatRequirements{}, fmt.Errorf("missing auth chat requirements token: %v", finalizePayload2)
 		}
 		return ChatRequirements{}, fmt.Errorf("missing chat requirements token: %v", finalizePayload2)
 	}
-	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: util.Clean(finalizePayload2["so_token"]), DxToken: dxToken, Raw: finalizePayload2}, nil
+	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: soToken, DxToken: dxToken, Raw: finalizePayload2}, nil
 }
 
 func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken, dxToken string, err error) {
