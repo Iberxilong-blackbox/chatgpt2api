@@ -161,12 +161,22 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		}
 	}
 
+	// Register write trace: record every set() for opcode 3 post-mortem.
+	// When opcode 3 fires, we dump the write history of its target register
+	// to diagnose why XOR-chain encrypted fragments aren't reaching it.
+	type regWriteEntry struct {
+		idx int
+		val any
+	}
+	regWriteLog := map[any][]regWriteEntry{}
+
 	get := func(value any) any {
 		return process[turnstileKey(value)]
 	}
 	set := func(key any, value any) {
 		k := turnstileKey(key)
 		process[k] = value
+		regWriteLog[k] = append(regWriteLog[k], regWriteEntry{idx: instrIdx, val: value})
 	}
 	call := func(value any, args ...any) {
 		if fn, ok := value.(turnstileFunc); ok {
@@ -205,28 +215,32 @@ func solveSentinelDxToken(dx, proofKey string) string {
 		set(args[0], args[1])
 	})
 
-	// [3] Resolve / finalize: XOR-encrypt then base64-encode as result.
-	// Browser SDK flow: JSON.stringify(so) → XOR(proofKey) → btoa → turnstile
+	// [3] Resolve / finalize: base64-encode the value in the target register.
+	// Per sdk.js reverse engineering (lines 651-653):
+	//   At[o(16)](H, (t => { s(btoa("" + t)) }))
+	// opcode 3 ONLY does btoa(t) — no XOR, no JSON.stringify.
+	// XOR encryption happens earlier in the VM instruction chain;
+	// the encrypted value is already in the register when opcode 3 reads it.
 	process[float64(3)] = turnstileFunc(func(args ...any) {
 		if len(args) == 0 {
 			return
 		}
-		// Resolve register reference. args[0] may be:
-		// - float64 register key (direct dispatch) → get() resolves it
-		// - nil (already resolved by opcode 7 indirection) → skip get()
-		// - string literal (edge case) → skip get()
-		v := get(args[0])
-		if v == nil {
-			// Register is uninitialized — fall back to simulated window
-			if _, isRegKey := args[0].(float64); isRegKey || args[0] == nil {
-				v = simWindow.toJSON()
-			} else {
-				v = args[0] // literal string value
+		regKey := args[0]
+		v := get(regKey)
+
+		// Detailed trace: what register did opcode 3 read, and its write history
+		log.Printf("sentinel_dx: opcode 3 FINAL — regKey=%v value=%s", regKey, traceValue(v))
+		k := turnstileKey(regKey)
+		if writes, ok := regWriteLog[k]; ok {
+			log.Printf("sentinel_dx: opcode 3 — register %v write history (%d writes):", regKey, len(writes))
+			for _, w := range writes {
+				log.Printf("sentinel_dx:   [%d] = %s", w.idx, traceValue(w.val))
 			}
+		} else {
+			log.Printf("sentinel_dx: opcode 3 — register %v was NEVER written via set()!", regKey)
 		}
-		jsonStr := turnstileToString(v)
-		encrypted := xorTurnstileString(jsonStr, proofKey)
-		result = base64.StdEncoding.EncodeToString([]byte(encrypted))
+
+		result = base64.StdEncoding.EncodeToString([]byte(turnstileToString(v)))
 	})
 
 	// [4] Reject / error — log and output error as btoa
@@ -671,7 +685,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 			// Bind arguments to registers
 			for i, reg := range bindings {
 				if i < len(callArgs) {
-					capturedProcess[reg] = callArgs[i]
+					set(reg, callArgs[i]) // traced write
 				}
 			}
 
@@ -706,7 +720,7 @@ func solveSentinelDxToken(dx, proofKey string) string {
 
 			// If sub-VM produced a result via opcode 3, store in returnReg
 			if subResult != "" {
-				capturedProcess[returnReg] = subResult
+				set(returnReg, subResult) // traced write
 			}
 		})
 
@@ -791,6 +805,23 @@ func solveSentinelDxToken(dx, proofKey string) string {
 	isCryptoOp := func(key any) bool {
 		k := turnstileToFloat(key)
 		return k == 1 || k == 3 || k == 15 || k == 19
+	}
+
+	// Pre-scan: find all instructions that reference opcode 3 (the final output)
+	// to understand which register(s) should hold the XOR-chain encrypted result.
+	log.Printf("sentinel_dx: pre-scan — searching for opcode 3 references in %d instructions", len(tokenList))
+	for i, token := range tokenList {
+		if len(token) < 2 {
+			continue
+		}
+		// Direct call: token = [3, regKey, ...]
+		if turnstileToFloat(token[0]) == 3 {
+			log.Printf("sentinel_dx: pre-scan [%d] DIRECT op3: regKey=%v", i, token[1])
+		}
+		// Indirect via op7: token = [op7_key, 3, regKey, ...]
+		if len(token) >= 3 && turnstileToFloat(token[1]) == 3 {
+			log.Printf("sentinel_dx: pre-scan [%d] INDIRECT op3 via %v: regKey=%v", i, token[0], token[2])
+		}
 	}
 
 	// Execution loop
