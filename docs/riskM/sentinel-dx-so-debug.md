@@ -100,11 +100,47 @@ window["Reflect"] = nil                    ← 根因: SO buildWindow() 缺少 R
 | 2 | 添加 base64 解码诊断日志 (D0) | 看到 snapshot 原始输出 | ✅ 确认为 4 byte 碎片 |
 | 3 | 添加 D1/D2/D3 诊断日志 | 看到 collector 寄存器 + 回调参数 | ✅ collector 存标签名, 回调类型 string |
 | 4 | 添加 snapshot 前 10 条指令 dump (D4) | 精确定位失败点 | ✅ **根因确认**: `window.Reflect` 返回 nil |
-| 5 | 补齐 SO buildWindow 缺失的 JS 全局对象 | snapshot 读到正确值 | ⏳ 待部署 |
+| 5 | 补齐 SO buildWindow 缺失的 JS 全局对象 | Reflect/Object 正常，后续指令仍有缺失 | ❌ 仍为 4 bytes ("_ABT") |
+| 6 | 添加 nil-property 追踪 (D5) | 精确定位全部缺失属性 | ⏳ 待部署 |
 
 ---
 
 ## 修复 #5：补齐 SO buildWindow() 缺失的 JS 全局对象 (2026-06-25)
+
+### 部署结果 (14:12)
+
+```
+snapshot ins[2] = [64.76 56.87 Reflect]
+snapshot ins[4] = [55.8 56.87 10 56.87]    ← window["Reflect"] 现在返回正确对象 ✅
+snapshot ins[8] = [55.8 32.22 56.87 32.22]  ← Reflect["set"] 现在也正确 ✅
+snapshot ins[9] = [64.76 80.47 Object]      ← 开始读取下一个全局对象
+snapshot success callback — arg type=string, toStr="_ABT", len=4  ← 仍为 4 bytes ❌
+```
+
+**Reflect 和 Object 都已修复**（指令 0-9 全部正常），但后续 496 条指令仍有别的缺失属性导致级联塌陷。
+
+### 结论
+
+逐个补齐属性的方式（whack-a-mole）效率太低——504 条指令中可能有 10+ 个缺失点。需要一次性定位**全部**缺失属性。
+
+---
+
+## 修复 #6：nil-property 追踪 (2026-06-25)
+
+### 改动
+
+在 `jsGetProp()` 中新增：当 snapshot 模式从 `map[string]any` 查找属性返回 nil 时，记录缺失的 key 和次数。snapshot 成功回调时 dump top-20 缺失属性。
+
+### 预期日志
+
+```
+so: snapshot nil-props: 12 unique missing keys:
+so: snapshot nil-prop #1: "someProperty" (×45)
+so: snapshot nil-prop #2: "anotherProp" (×12)
+...
+```
+
+这会告诉我们 snapshot 字节码在 window mock 中查找了哪些不存在的属性——一次性定位所有缺失点，然后批量补齐。
 
 ### 改动内容
 

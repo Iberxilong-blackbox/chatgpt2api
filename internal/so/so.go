@@ -167,9 +167,11 @@ type soSolver struct {
 	resolved string
 	rejected string
 	profile  *browserfp.Profile
+	nilProps map[string]int // tracks missing-property lookups (key → count) for snapshot diagnostics
+	trackNil bool          // only enabled during snapshot mode
 }
 
-func newSOSolver() *soSolver { return &soSolver{regs: map[string]any{}} }
+func newSOSolver() *soSolver { return &soSolver{regs: map[string]any{}, nilProps: map[string]int{}} }
 
 type vmFunc = func(args ...any) (any, error)
 
@@ -186,12 +188,31 @@ func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
 	s.done = false
 	s.resolved = ""
 	s.rejected = ""
+	s.nilProps = map[string]int{}
+	s.trackNil = !collector // only track in snapshot mode
 	s.initRuntime()
 
 	if !collector {
 		s.setReg(successReg, vmFunc(func(args ...any) (any, error) {
 			if !s.done {
 				s.done = true
+				// Dump nil-property diagnostics before encoding result.
+				if len(s.nilProps) > 0 {
+					type kv struct{ k string; c int }
+					var sorted []kv
+					for k, c := range s.nilProps {
+						sorted = append(sorted, kv{k, c})
+					}
+					sort.Slice(sorted, func(i, j int) bool { return sorted[i].c > sorted[j].c })
+					limit := 20
+					if len(sorted) < limit {
+						limit = len(sorted)
+					}
+					log.Printf("so: snapshot nil-props — %d unique missing keys:", len(s.nilProps))
+					for i := 0; i < limit; i++ {
+						log.Printf("so: snapshot nil-prop #%d: %q (×%d)", i+1, sorted[i].k, sorted[i].c)
+					}
+				}
 				var v any
 				if len(args) > 0 {
 					v = args[0]
@@ -1054,6 +1075,9 @@ func (s *soSolver) jsGetProp(obj any, prop any) any {
 		key := toStr(prop)
 		if val, ok := v[key]; ok {
 			return val
+		}
+		if s.trackNil {
+			s.nilProps[key]++
 		}
 		return nil
 	case []any:
