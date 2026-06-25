@@ -19,6 +19,8 @@ __pycache__/
 node_modules/
 data
 edit
+aurora/
+
 # useless
 docs/riskM/image.png
 docker-compose-local.yml
@@ -45,4 +47,5 @@ auto_import/
 git_cache/
 .ace-tool/
 .codegraph/
+
 

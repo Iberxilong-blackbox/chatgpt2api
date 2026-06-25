@@ -2,7 +2,7 @@
 
 > 基于 Round 8 CDP Hook 实验捕获的浏览器真实 `__oai_so_*` 值，修复 Go VM 的 simWindow 初始化。
 
-**状态**：待实施
+**状态**：🔄 数据修复已部署，服务端仍拒绝 — 进入差异排查阶段
 **日期**：2026-06-23
 
 ---
@@ -242,6 +242,122 @@ simWindow 中的 `_s` 和 `_t0` 设为 null 后，VM 读取这些 null 值会 fa
 ### 备选 B：直接借用浏览器 so token
 
 如果浏览器 session 成功拿到有效的 `turnstile` token，可尝试通过 `OpenAI-Sentinel-SO-Token` header 注入。风险：token 可能绑定 device/session。
+
+---
+
+## 实施记录
+
+### Round 1：initSimWindow 预填充（2026-06-23）🔴 被覆盖
+
+**部署内容**：
+- `sentinel_dx.go`：新增 `initSimWindow()` 函数（17 个 null 字段 + 19 个交互数据字段）
+- `sentinel_dx.go`：在 `simWindow := &turnstileOrderedMap{}` 之后调用 `initSimWindow(simWindow)`
+
+**结果**：`so_token_present=false`
+
+**解码 dxToken 分析**：所有交互数据字段仍是 `0` 或 `null`，init 值被 VM 的 Reflect.set 指令全部覆盖。`_h/_hi/_hp/_hw` 字段值为函数对象，`json.Marshal` 返回空字节导致 JSON 无效（`"__oai_so_h":,`）。
+
+**根因**：`initSimWindow` 在 VM 循环**之前**运行。VM 指令中的 Reflect.set 调用是 SDK 初始化阶段（写入 0/nil/fn），必然覆盖预填充值。真实浏览器中事件监听器在初始化**之后**触发并更新这些值，但 Go VM 没有事件循环。
+
+### Round 2：Reflect.set 保护 + toJSON 修复（2026-06-23）🔴 仍未通过
+
+**新增修改**：
+
+1. **Reflect.set 保护**（`sentinel_dx.go` opcode 7 handler）— 添加 `isZeroValue` guard：
+   - non-zero init 值被 VM 写入 0/nil → **拒绝覆盖**，保留 init 值
+   - nil init 值被 VM 写入 0 → **拒绝覆盖**，保留 null 语义
+   - nil init 值被 VM 写入非零（如 `_s`=Math.random）→ **放行**
+
+2. **toJSON 容错**（`turnstile.go`）— `json.Marshal` 对不可序列化类型返回空字节时，回退为 `null`
+
+**结果**：dxToken 长度从 832 → 1060 字节。解码验证：
+
+```
+修复前: {"__oai_so_h":,"__oai_so_wl":null,"__oai_so_ss":0,...}  // 无效JSON + 全零
+修复后: {"__oai_so_h":null,"__oai_so_wl":1869.99,"__oai_so_ss":184151.12,...}  // 有效JSON + 合理值
+```
+
+| 字段类别 | 修复前 | 修复后 | 状态 |
+|---------|--------|--------|:---:|
+| `_h/_hi/_hp/_hw` | 空值（无效JSON） | `null` | ✅ |
+| `_ht/_hc/_k/_kp/_p/_pc` | `0` | `null` | ✅ |
+| `_wl` | `null` | `1869.99` | ✅ |
+| `_m` | `null` | `213539.06` | ✅ |
+| `_ss/_sn` | `0` / `0` | `184151.12` / `59` | ✅ |
+| `_cs/_cn` | `0` / `0` | `36997.35` / `83` | ✅ |
+| `_sx0/_sy0/_lx/_ly` | 全 `0` | `655,988 → 651,944` | ✅ |
+| `_i/_we/_wb` | `0` / `0` / `0` | `153` / `3` / `1` | ✅ |
+| `_fs/_fs2/_fn/_bc/_bm` | ❌缺失 | `null` | ✅ |
+| `_s/_t0` | VM 填充 | VM 填充 | ✅ 不变 |
+
+**但仍然 `so_token_present=false`** — 服务端继续拒绝。
+
+### 当前状态总览
+
+| 项目 | 状态 | 说明 |
+|------|:---:|------|
+| XOR 密钥 (sourceP) | ✅ | 解密正确，0 unknown opcode |
+| Opcode 表 0-35 | ✅ | 全部实现 |
+| 寄存器系统 | ✅ | `map[any]any`，浮点 key 原样 |
+| PoW hash 碰撞 | ✅ | `token_present=true` |
+| VM Reflect.set 写入 simWindow | ✅ | 正确写入所有 30+ 字段 |
+| simWindow 字段完整性 | ✅ | 36 个字段全部出现 |
+| simWindow null vs 0 语义 | ✅ | 与浏览器一致（null 保留为 null） |
+| simWindow 交互数据非零 | ✅ | 时间戳、计数、坐标均有合理随机值 |
+| JSON 结构有效 | ✅ | 无序列化错误 |
+| **服务端接受证明** | 🔴 | `so_token_present=false` |
+
+---
+
+## 下一步排查方向
+
+既然 simWindow 数据的**存在性、类型、值范围**都合理了，但服务端仍拒绝，问题可能出在以下维度：
+
+### 方向 1：字段顺序（key order）不匹配
+
+浏览器 SDK 按 Reflect.set **执行顺序**插入 key。Go VM 的 simWindow 顺序是 `initSimWindow` 写入（先 null 后数据），与浏览器不同。
+
+`toJSON()` 保留插入顺序。如果服务端对 key 顺序做哈希校验，顺序不对会导致不匹配。
+
+**验证方式**：
+- 从 Round 8 CDP Hook 日志中提取浏览器 Reflect.set 的 key 写入顺序
+- 使 Go simWindow 的 key 顺序与浏览器一致
+
+### 方向 2：`_s` / `_t0` 在 simWindow vs 寄存器中的差异
+
+浏览器端 `_s` 和 `_t0` 在 simWindow 中为 `null`。VM 通过 opcode 17（`Math.random`/`Date.now`）将实际值写入**寄存器**而非 simWindow。最终加密函数从寄存器读取而非从 simWindow 读取。
+
+Go VM 将这些值写入了 simWindow。如果最终加密函数从 simWindow 读取 `_s`/`_t0` 而非从寄存器读取，值会不同（寄存器有真值，浏览器 simWindow 为 null）。
+
+**验证方式**：
+- 对比浏览器和 Go VM 的最终加密结果（不仅是 JSON 结构）
+- 将 `_s`/`_t0` 从 simWindow 中移除（保持 nil），观察加密输出是否变化
+
+### 方向 3：finalize 请求体的其他差异
+
+服务端校验可能不止看 `turnstile` 字段内容：
+- **Header 完整度**：`OpenAI-Sentinel-SO-Token` 之外的 headers
+- **请求时序**：prepare → finalize 间隔
+- **IP/会话一致性**：同一 IP 的 prepare 和 finalize
+- **turnstile 字段格式**：是否加密 + 如何嵌入请求体
+
+**验证方式**：
+- CDP Hook 捕获完整 finalize 请求（headers + body）
+- 与 Go 发出的 finalize 请求逐字段对比
+
+### 方向 4：XOR 密钥版本漂移
+
+当前使用 `sourceP`（prepare 响应中的 `p` 字段）作为 XOR 密钥。如果 SDK 实际使用新计算的 `proofToken`（PoW answer，`gAAAAAB...~S`），解密结果虽然能通过 JSON parse，但内容可能略有差异（某些常数字段值不同）。
+
+**验证方式**：
+- 用 `sourceP` 和 `rawProofAnswer` 分别解密同一 dx 指令，diff 对比 JSON 差异
+
+### 优先级建议
+
+1. **方向 1（key order）** — 成本最低，直接查 CDP 日志即可确认
+2. **方向 3（finalize 对比）** — 影响面最大，能发现其他结构性问题
+3. **方向 2（`_s`/`_t0` 位置）** — 需要理解 SDK 加密函数的数据流
+4. **方向 4（XOR 密钥）** — 低概率（已验证解密正确），但值得快速验证
 
 ---
 

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,8 +13,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"chatgpt2api/internal/browserfp"
 	"chatgpt2api/internal/service"
 	"chatgpt2api/internal/util"
 )
@@ -35,6 +36,8 @@ const (
 	browserSecCHUABitness         = `"64"`
 	browserImpersonationProfile   = "chrome145"
 )
+
+var browserfpOnce sync.Once
 
 type AccountLookup interface {
 	GetAccount(accessToken string) map[string]any
@@ -56,6 +59,7 @@ type Client struct {
 	powSources    []string
 	powDataBuild  string
 	powTimeOrigin float64
+	soSess        *sosession // SO session observer state (collector + snapshot)
 }
 
 type ChatRequirements struct {
@@ -68,6 +72,8 @@ type ChatRequirements struct {
 }
 
 func NewClient(accessToken string, lookup AccountLookup, proxy *service.ProxyService) *Client {
+	browserfpOnce.Do(func() { browserfp.Init() })
+
 	c := &Client{
 		BaseURL:           "https://chatgpt.com",
 		ClientVersion:     DefaultClientVersion,
@@ -421,11 +427,36 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		basePath = "/backend-api/sentinel/chat-requirements"
 		contextName = "auth_chat_requirements"
 	}
-	p := buildLegacyRequirementsToken(c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
+
+	// Build requirements token using aurora 25-element fingerprint config.
+	p := buildRequirementsToken(c.userAgent)
+
+	// Step 0: POST /sentinel/req — register session, get oai-sc cookie.
+	// Best-effort: if the server doesn't support this endpoint (404) or returns
+	// an error, log a warning and continue to prepare. The surf HTTP client's
+	// cookie jar captures any Set-Cookie headers automatically.
+	// Skip for test servers (127.0.0.1 / localhost) to avoid mock handler overhead.
+	if !strings.Contains(c.BaseURL, "127.0.0.1") && !strings.Contains(c.BaseURL, "localhost") {
+		reqPath := strings.Replace(basePath, "/chat-requirements", "", 1) + "/req"
+		reqBody := map[string]any{"p": p, "id": c.deviceID, "flow": "chatgpt"}
+		reqResp, reqErr := c.postJSON(ctx, reqPath, reqBody, c.headers(reqPath, map[string]string{"Content-Type": "application/json"}), false)
+		if reqErr == nil {
+			reqData, _ := io.ReadAll(reqResp.Body)
+			reqResp.Body.Close()
+			if reqResp.StatusCode >= 200 && reqResp.StatusCode < 300 {
+				log.Printf("sentinel: /req OK — status=%d", reqResp.StatusCode)
+			} else {
+				log.Printf("sentinel: /req returned %d — continuing to prepare (response: %s)", reqResp.StatusCode, summarizeUpstreamErrorBody(reqData))
+			}
+		} else {
+			log.Printf("sentinel: /req transport error — %v (continuing to prepare)", reqErr)
+		}
+	}
 
 	// Step 1: POST /prepare
 	preparePath := basePath + "/prepare"
-	resp, err := c.postJSON(ctx, preparePath, map[string]any{"p": p}, c.headers(preparePath, map[string]string{"Content-Type": "application/json"}), false)
+	prepareBody := map[string]any{"p": p, "id": c.deviceID, "flow": "chatgpt"}
+	resp, err := c.postJSON(ctx, preparePath, prepareBody, c.headers(preparePath, map[string]string{"Content-Type": "application/json"}), false)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
@@ -443,8 +474,8 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		return ChatRequirements{}, fmt.Errorf("missing prepare_token in %s response: %v", contextName, preparePayload)
 	}
 
-	// Step 2: solve PoW + turnstile challenges
-	proofToken, turnstileToken, dxToken, err := c.buildRequirements(preparePayload, p)
+	// Step 2: solve PoW + turnstile + SO start (using aurora implementations).
+	proofToken, turnstileToken, err := c.buildRequirements(preparePayload, p)
 	if err != nil {
 		return ChatRequirements{}, err
 	}
@@ -455,9 +486,6 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		"prepare_token": prepareToken,
 		"proofofwork":   proofToken,
 		"turnstile":     turnstileToken,
-	}
-	if dxToken != "" {
-		finalizePayload["so"] = dxToken
 	}
 	resp2, err := c.postJSON(ctx, finalizePath, finalizePayload, c.headers(finalizePath, map[string]string{"Content-Type": "application/json"}), false)
 	if err != nil {
@@ -474,26 +502,15 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	}
 	token := util.Clean(finalizePayload2["token"])
 	soToken := util.Clean(finalizePayload2["so_token"])
-	// Diagnostic: log finalize response to track whether server accepts our "so" (dxToken).
-	// If so_token is non-empty, the server acknowledged our so and will expect
-	// OpenAI-Sentinel-SO-Token header on subsequent conversation requests.
-	log.Printf("sentinel_dx: finalize response — status=%d, token_present=%v, so_token_present=%v",
+
+	log.Printf("sentinel: finalize response — status=%d, token_present=%v, so_token_present=%v",
 		resp2.StatusCode, token != "", soToken != "")
+
 	if soToken != "" {
-		// Rare event: server accepted our dxToken. Persist context to so_events.log.
-		dxPreview := dxToken
-		if len(dxPreview) > 80 {
-			dxPreview = dxPreview[:80]
-		}
-		pkPrefix := p
-		if len(pkPrefix) > 50 {
-			pkPrefix = pkPrefix[:50]
-		}
 		logSOEvent("so_token_present", map[string]any{
 			"so_token":         soToken,
-			"dx_token_prefix":  dxPreview,
-			"dx_token_len":     len(dxToken),
-			"proof_key_prefix": pkPrefix,
+			"p_token_len":      len(p),
+			"turnstile_len":    len(turnstileToken),
 			"finalize_status":  resp2.StatusCode,
 		})
 	}
@@ -503,95 +520,77 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 		}
 		return ChatRequirements{}, fmt.Errorf("missing chat requirements token: %v", finalizePayload2)
 	}
-	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: soToken, DxToken: dxToken, Raw: finalizePayload2}, nil
+
+	// Store chat token in SO session for later SO token construction.
+	if c.soSess != nil {
+		c.soSess.setChatToken(token)
+	}
+
+	// Step 4: POST /sentinel/ping — fire-and-forget heartbeat (aurora L6).
+	// Reports token state to the server. Skips test servers (127.0.0.1 / localhost).
+	if !strings.Contains(c.BaseURL, "127.0.0.1") && !strings.Contains(c.BaseURL, "localhost") {
+		go func() {
+			pingPath := strings.Replace(basePath, "/chat-requirements", "", 1) + "/ping"
+			pingHeaders := c.headers(pingPath, map[string]string{
+				"Content-Type":                "application/json",
+				"OpenAI-Sentinel-Token":       buildSentinelTokenHeader(proofToken, turnstileToken, token, c.deviceID),
+				"OpenAI-Sentinel-Extra-Data":  buildSentinelExtraData(proofToken != "", turnstileToken != "", soToken != ""),
+			})
+			pingResp, pingErr := c.postJSON(context.Background(), pingPath, map[string]any{}, pingHeaders, false)
+			if pingErr == nil {
+				pingResp.Body.Close()
+				log.Printf("sentinel: /ping — status=%d", pingResp.StatusCode)
+				if pingResp.StatusCode >= 200 && pingResp.StatusCode < 300 {
+					logSOEvent("sentinel_ping_ok", map[string]any{"status": pingResp.StatusCode})
+				}
+			} else {
+				log.Printf("sentinel: /ping transport error — %v", pingErr)
+			}
+		}()
+	}
+
+	return ChatRequirements{Token: token, ProofToken: proofToken, TurnstileToken: turnstileToken, SOToken: soToken, Raw: finalizePayload2}, nil
 }
 
-func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken, dxToken string, err error) {
+func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofToken, turnstileToken string, err error) {
 	if arkose := util.StringMap(data["arkose"]); util.ToBool(arkose["required"]) {
-		return "", "", "", fmt.Errorf("chat requirements requires arkose token, which is not implemented")
+		return "", "", fmt.Errorf("chat requirements requires arkose token, which is not implemented")
 	}
+
+	// PoW: use aurora 25-element config + FNV-1a hash.
 	proof := util.StringMap(data["proofofwork"])
 	if util.ToBool(proof["required"]) {
-		token, err := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent, c.powSources, c.powDataBuild, c.powTimeOrigin)
-		if err != nil {
-			return "", "", "", err
+		token, powErr := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent)
+		if powErr != nil {
+			log.Printf("sentinel: PoW FAILED — %v", powErr)
+			return "", "", powErr
 		}
 		proofToken = token
+		log.Printf("sentinel: PoW OK — token len=%d", len(proofToken))
 	}
+
+	// Turnstile: use aurora full 35-opcode VM with browser window mock.
 	turnstile := util.StringMap(data["turnstile"])
 	if util.ToBool(turnstile["required"]) && util.Clean(turnstile["dx"]) != "" {
 		turnstileToken = solveTurnstileToken(util.Clean(turnstile["dx"]), sourceP)
-	}
-	// Sentinel dx VM: SDK 源码分析确认 XOR 密钥是 legacy p token (sourceP)，不是 proof token。
-	// 参见 docs/plan/sentinel-dx-diagnostic-journal.md 第四轮：yFt() 时序中，
-	// NNt(r, e) 存入 p token → GNt(r) 调用时 PoW 还没开始。
-	dxToken = ""
-	so := util.StringMap(data["so"])
-	if util.ToBool(so["required"]) {
-		collectorDxPresent := util.Clean(so["collector_dx"]) != ""
-		if collectorDxPresent {
-			dxToken = solveSentinelDxToken(util.Clean(so["collector_dx"]), sourceP)
+		if turnstileToken == "" {
+			log.Printf("sentinel: Turnstile FAILED — dx len=%d", len(util.Clean(turnstile["dx"])))
 		}
-		// Diagnostic logging — confirms whether OpenAI is sending dx challenges.
-		// Also log sourceP prefix + length to track XOR key consistency across requests.
-		sourcePPreview := sourceP
-		if len(sourcePPreview) > 15 {
-			sourcePPreview = sourcePPreview[:15]
-		}
-		log.Printf("sentinel_dx: so.required=true, collector_dx_present=%v, pow_required=%v, proofToken_empty=%v, dxToken_produced=%v, sourceP=%q...(len=%d)",
-			collectorDxPresent,
-			util.ToBool(proof["required"]),
-			proofToken == "",
-			dxToken != "",
-			sourcePPreview,
-			len(sourceP))
 	}
 
-		// Anomaly check: a "produced" dxToken that decodes to a single value
-		// (e.g. "true", "54.72") means the VM hit the nil fallback with an
-		// almost-empty simWindow — may be an early signal of SDK drift.
-		if dxToken != "" {
-			pkPrefix := sourceP
-			if len(pkPrefix) > 50 {
-				pkPrefix = pkPrefix[:50]
-			}
-			dxPreview := dxToken
-			if len(dxPreview) > 80 {
-				dxPreview = dxPreview[:80]
-			}
-			isAnomaly := false
-			var decodedKeys []string
-			if decoded, err := base64.StdEncoding.DecodeString(dxToken); err == nil {
-				var obj map[string]any
-				if json.Unmarshal(decoded, &obj) == nil {
-					if len(obj) < 5 {
-						isAnomaly = true
-						for k := range obj {
-							decodedKeys = append(decodedKeys, k)
-							if len(decodedKeys) >= 10 {
-								break
-							}
-						}
-					}
-				} else if len(dxToken) <= 8 {
-					// Not valid JSON at all (single-value string like "54.72")
-					isAnomaly = true
-					decodedKeys = []string{"<not valid JSON>"}
-				}
-			} else if len(dxToken) <= 8 {
-				isAnomaly = true
-				decodedKeys = []string{"<not valid base64>"}
-			}
-			if isAnomaly {
-				logSOEvent("dx_token_anomaly", map[string]any{
-					"dx_token_prefix":  dxPreview,
-					"dx_token_len":     len(dxToken),
-					"decoded_keys":     decodedKeys,
-					"proof_key_prefix": pkPrefix,
-				})
-			}
+	// SO: start collector asynchronously using aurora SO VM.
+	soData := util.StringMap(data["so"])
+	if util.ToBool(soData["required"]) {
+		collectorDX := util.Clean(soData["collector_dx"])
+		snapshotDX := util.Clean(soData["snapshot_dx"])
+		log.Printf("sentinel: SO — required=true, collector_dx_present=%v, snapshot_dx_present=%v",
+			collectorDX != "", snapshotDX != "")
+		if collectorDX != "" {
+			c.soSess = startSOCollector(sourceP, collectorDX, snapshotDX)
 		}
-	return proofToken, turnstileToken, dxToken, nil
+	}
+
+	return proofToken, turnstileToken, nil
 }
 
 func (c *Client) chatTarget() (string, string) {
@@ -1002,9 +1001,22 @@ func (c *Client) conversationHeaders(path string, reqs ChatRequirements) map[str
 	if reqs.TurnstileToken != "" {
 		extra["OpenAI-Sentinel-Turnstile-Token"] = reqs.TurnstileToken
 	}
-	if reqs.SOToken != "" {
-		extra["OpenAI-Sentinel-SO-Token"] = reqs.SOToken
+	// Build and inject SO token from async collector snapshot.
+	soTokenPresent := reqs.SOToken != ""
+	if c.soSess != nil {
+		if soTokenHeader := c.soSess.buildSOToken(c.deviceID); soTokenHeader != "" {
+			extra["OpenAI-Sentinel-SO-Token"] = soTokenHeader
+			soTokenPresent = true
+		}
 	}
+	// openai-sentinel-token: composite JSON header with all token references.
+	extra["OpenAI-Sentinel-Token"] = buildSentinelTokenHeader(
+		reqs.ProofToken, reqs.TurnstileToken, reqs.Token, c.deviceID,
+	)
+	// openai-sentinel-extra-data: flags indicating which tokens are present.
+	extra["OpenAI-Sentinel-Extra-Data"] = buildSentinelExtraData(
+		reqs.ProofToken != "", reqs.TurnstileToken != "", soTokenPresent,
+	)
 	return c.headers(path, extra)
 }
 

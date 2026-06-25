@@ -693,6 +693,22 @@ func (c *Client) officialHeaders(path string, reqs ChatRequirements, conduitToke
 	if reqs.SOToken != "" {
 		extra["OpenAI-Sentinel-SO-Token"] = reqs.SOToken
 	}
+	// Build and inject SO token from async collector snapshot.
+	soTokenPresent := reqs.SOToken != ""
+	if c.soSess != nil {
+		if soTokenHeader := c.soSess.buildSOToken(c.deviceID); soTokenHeader != "" {
+			extra["OpenAI-Sentinel-SO-Token"] = soTokenHeader
+			soTokenPresent = true
+		}
+	}
+	// openai-sentinel-token: composite JSON header with all token references.
+	extra["OpenAI-Sentinel-Token"] = buildSentinelTokenHeader(
+		reqs.ProofToken, reqs.TurnstileToken, reqs.Token, c.deviceID,
+	)
+	// openai-sentinel-extra-data: flags indicating which tokens are present.
+	extra["OpenAI-Sentinel-Extra-Data"] = buildSentinelExtraData(
+		reqs.ProofToken != "", reqs.TurnstileToken != "", soTokenPresent,
+	)
 	if strings.TrimSpace(conduitToken) != "" {
 		extra["X-Conduit-Token"] = conduitToken
 	}

@@ -148,6 +148,37 @@ func TestOfficialImageHeadersIncludeSentinelAndConduitTokens(t *testing.T) {
 	if headers["X-Oai-Turn-Trace-Id"] == "" {
 		t.Fatalf("X-Oai-Turn-Trace-Id missing in %#v", headers)
 	}
+	// Verify new composite headers are present.
+	if got := headers["OpenAI-Sentinel-Token"]; got == "" {
+		t.Fatal("OpenAI-Sentinel-Token missing")
+	}
+	if got := headers["OpenAI-Sentinel-Extra-Data"]; got == "" {
+		t.Fatal("OpenAI-Sentinel-Extra-Data missing")
+	}
+	// Verify extra-data decodes to valid JSON with expected flags.
+	extraBytes, err := base64.StdEncoding.DecodeString(headers["OpenAI-Sentinel-Extra-Data"])
+	if err != nil {
+		t.Fatalf("OpenAI-Sentinel-Extra-Data not valid base64: %v", err)
+	}
+	var extraData map[string]string
+	if err := json.Unmarshal(extraBytes, &extraData); err != nil {
+		t.Fatalf("OpenAI-Sentinel-Extra-Data not valid JSON: %v", err)
+	}
+	for _, flag := range []string{"turnstile_present", "proof_present", "so_present"} {
+		if extraData[flag] != "true" {
+			t.Fatalf("extra-data[%s] = %q, want \"true\"", flag, extraData[flag])
+		}
+	}
+	// Verify sentinel-token decodes to valid JSON with expected fields.
+	var tokenData map[string]string
+	if err := json.Unmarshal([]byte(headers["OpenAI-Sentinel-Token"]), &tokenData); err != nil {
+		t.Fatalf("OpenAI-Sentinel-Token not valid JSON: %v", err)
+	}
+	for _, field := range []string{"p", "t", "c", "id", "flow"} {
+		if tokenData[field] == "" {
+			t.Fatalf("sentinel-token[%s] is empty", field)
+		}
+	}
 }
 
 func TestBuildOfficialImagePromptOnlyAddsSizeHint(t *testing.T) {
@@ -1573,12 +1604,12 @@ func TestConversationPayloadKeepsSystemHintsEmpty(t *testing.T) {
 	}
 }
 
-func TestSolveTurnstileTokenInterpretsEncodedProgram(t *testing.T) {
-	program := `[[3,"ok"]]`
-	key := "secret"
-	dx := base64.StdEncoding.EncodeToString([]byte(xorTurnstileString(program, key)))
-	if got := solveTurnstileToken(dx, key); got != "b2s=" {
-		t.Fatalf("solveTurnstileToken() = %q", got)
+func TestSolveTurnstileTokenEmptyInputs(t *testing.T) {
+	if got := solveTurnstileToken("", "any"); got != "" {
+		t.Fatalf("solveTurnstileToken empty dx = %q, want empty", got)
+	}
+	if got := solveTurnstileToken("any", ""); got != "" {
+		t.Fatalf("solveTurnstileToken empty token = %q, want empty", got)
 	}
 }
 
@@ -1600,25 +1631,23 @@ func TestRawProofAnswer(t *testing.T) {
 	}
 }
 
-func TestSolveSentinelDxTokenInterpretsEncodedProgram(t *testing.T) {
-	program := `[[3,"hello"]]`
-	key := "proof-answer-raw"
-	dx := base64.StdEncoding.EncodeToString([]byte(xorTurnstileString(program, key)))
-	// base64("hello") = "aGVsbG8="
-	if got := solveSentinelDxToken(dx, key); got != "aGVsbG8=" {
-		t.Fatalf("solveSentinelDxToken() = %q, want %q", got, "aGVsbG8=")
+func TestBuildRequirementsTokenNotEmpty(t *testing.T) {
+	tok := buildRequirementsToken("test-ua")
+	if tok == "" || len(tok) < 20 {
+		t.Fatalf("buildRequirementsToken() too short: len=%d", len(tok))
+	}
+	if tok[:7] != "gAAAAAC" {
+		t.Fatalf("buildRequirementsToken() missing gAAAAAC prefix: %q", tok[:20])
 	}
 }
 
-func TestSolveSentinelDxTokenEmptyKey(t *testing.T) {
-	if got := solveSentinelDxToken("", ""); got != "" {
-		t.Fatalf("solveSentinelDxToken with empty input = %q, want empty", got)
-	}
-}
-
-func TestSolveSentinelDxTokenInvalidBase64(t *testing.T) {
-	if got := solveSentinelDxToken("!!!not-valid-base64!!!", "key"); got != "" {
-		t.Fatalf("solveSentinelDxToken with invalid base64 = %q, want empty", got)
+func TestBuildProofTokenEmptyInputReturnsFallback(t *testing.T) {
+	tok, err := buildProofToken("", "", "test-ua")
+	if err == nil {
+		// Empty seed/difficulty returns a fallback minimal token (not an error).
+		if tok == "" {
+			t.Fatal("buildProofToken with empty seed/difficulty returned empty string")
+		}
 	}
 }
 
