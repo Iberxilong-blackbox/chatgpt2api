@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"regexp"
 	"sort"
@@ -237,6 +238,12 @@ func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
 		return "", err
 	}
 	s.setReg(pcReg, queue)
+
+	// Diagnostic: trace snapshot VM instruction count and sample.
+	if !collector && len(queue) > 0 {
+		log.Printf("so: snapshot queue len=%d, plain_len=%d, first=%v, last=%v",
+			len(queue), len(plain), queue[0], queue[len(queue)-1])
+	}
 
 	if err := s.runQueue(); err != nil && !s.done {
 		if !collector {

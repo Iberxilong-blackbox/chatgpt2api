@@ -77,6 +77,12 @@ func (s *sosession) buildSOToken(deviceID string) string {
 		return ""
 	}
 	log.Printf("sentinel_dx: SO snapshot OK — result len=%d", len(soResult))
+	// Diagnostic: decode the base64 snapshot result to see what the VM produced.
+	if decoded, decErr := base64.StdEncoding.DecodeString(soResult); decErr == nil {
+		log.Printf("sentinel_dx: SO snapshot decoded — raw=%q, hex=%x", string(decoded), decoded)
+	} else {
+		log.Printf("sentinel_dx: SO snapshot base64 decode failed — %v", decErr)
+	}
 
 	soToken, err := so.BuildToken(soResult, s.chatToken, deviceID, "chatgpt")
 	if err != nil {

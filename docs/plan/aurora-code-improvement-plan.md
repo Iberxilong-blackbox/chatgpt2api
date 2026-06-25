@@ -81,6 +81,17 @@
 - [ ] L1: TLS 客户端切换（surf → bogdanfinn/tls-client Chrome 146）→ **暂缓，当前 surf + Chrome 145 已自洽**
 - [ ] L5: 数据一致性链验证（UA ↔ TLS JA3 ↔ config[4] 自洽）→ **Chrome 145 已自洽**
 - [ ] 部署到服务器 + 日志诊断验证
+- [ ] **SO VM snapshot 修复**（result 仅 8 bytes → `so_token_present=false`）
+  - 详见 [[sentinel-dx-so-debug]]
+  - 已添加诊断日志：snapshot result 解码 + VM 指令队列追踪
+  - ⏳ 待部署观察诊断输出
+
+### 🔍 新增诊断日志
+
+- `sentinel_dx.go`: SO snapshot result base64 解码（查看原始输出内容）
+- `so.go`: snapshot VM 指令队列长度 + 首末指令采样
+  
+  预期部署后能确认 snapshot 产出的真实值（"null" / 错误信息 / 数据片段）
 
 ### ✅ Phase 4 完成 — L6 请求编排
 
