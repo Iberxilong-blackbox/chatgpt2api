@@ -251,6 +251,16 @@ func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
 		}
 		log.Printf("so: %s queue len=%d, plain_len=%d, first=%v, last=%v",
 			mode, len(queue), len(plain), queue[0], queue[len(queue)-1])
+		// Dump first 10 instructions for snapshot mode to trace what window properties it reads.
+		if !collector {
+			dumpCount := 10
+			if len(queue) < dumpCount {
+				dumpCount = len(queue)
+			}
+			for i := 0; i < dumpCount; i++ {
+				log.Printf("so: snapshot ins[%d] = %v", i, queue[i])
+			}
+		}
 	}
 
 	if err := s.runQueue(); err != nil && !s.done {
