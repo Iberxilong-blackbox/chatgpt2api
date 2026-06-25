@@ -3,8 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brush,
+  Download,
+  Eye,
   ImagePlus,
   LoaderCircle,
+  MessageSquarePlus,
   Send,
   ShieldCheck,
   Sparkles,
@@ -15,6 +18,7 @@ import { toast } from "sonner";
 import { RetouchCanvas, type RetouchCanvasHandle } from "@/app/retouch/components/retouch-canvas";
 import { buildRetouchPrompt, type RetouchMarkerColor } from "@/app/retouch/retouch-prompt";
 import { AuthenticatedImage } from "@/components/authenticated-image";
+import { ImageLightbox } from "@/components/image-lightbox";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
@@ -39,6 +43,10 @@ import {
   type ImageOutputFormat,
   type ImageVisibility,
 } from "@/lib/api";
+import {
+  fetchAuthenticatedImageBlob,
+  shouldUseAuthenticatedImageFallback,
+} from "@/lib/authenticated-image";
 import { getManagedImagePathFromUrl } from "@/lib/image-path";
 import { useAuthGuard } from "@/lib/use-auth-guard";
 import { cn } from "@/lib/utils";
@@ -52,6 +60,13 @@ import {
 import { clearImageTurnProgress, setImageTurnProgress } from "@/store/image-turn-progress";
 
 type CreationTaskDataItem = NonNullable<CreationTask["data"]>[number];
+type RetouchLightboxImage = {
+  id: string;
+  src: string;
+  fileName?: string;
+  outputFormat?: string;
+  dimensions?: string;
+};
 
 type SubmitState = {
   conversation: ImageConversation | null;
@@ -83,6 +98,17 @@ function fileToDataUrl(file: File) {
   });
 }
 
+
+function dataUrlToBlob(dataUrl: string) {
+  const [meta, data] = dataUrl.split(",");
+  const mime = meta?.match(/^data:(.*?);base64$/)?.[1] || "image/png";
+  const binary = atob(data || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: mime });
+}
 function positiveDimension(value: unknown) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? numeric : undefined;
@@ -323,6 +349,95 @@ function resultImageSrc(image: StoredImage) {
   return image.url || "";
 }
 
+
+function imageExtension(outputFormat?: string) {
+  if (outputFormat === "jpeg") {
+    return "jpg";
+  }
+  return outputFormat || "png";
+}
+
+function retouchImageFileName(turn: ImageTurn, index: number, outputFormat?: string) {
+  const date = new Date(turn.createdAt);
+  const safeIndex = String(index + 1).padStart(2, "0");
+  const extension = imageExtension(outputFormat);
+  if (Number.isNaN(date.getTime())) {
+    return `retouch-${turn.id.slice(0, 8)}-${safeIndex}.${extension}`;
+  }
+  const yyyy = String(date.getFullYear());
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const sec = String(date.getSeconds()).padStart(2, "0");
+  return `retouch-${yyyy}${mm}${dd}-${hh}${min}${sec}-${safeIndex}.${extension}`;
+}
+
+function buildLightboxImages(turn: ImageTurn): RetouchLightboxImage[] {
+  return turn.images.flatMap((image, index) => {
+    const src = resultImageSrc(image);
+    if (!src) {
+      return [];
+    }
+    return [{
+      id: image.id,
+      src,
+      fileName: retouchImageFileName(turn, index, image.outputFormat || turn.outputFormat),
+      outputFormat: image.outputFormat || turn.outputFormat,
+      dimensions: image.width && image.height ? `${image.width} x ${image.height}` : undefined,
+    }];
+  });
+}
+
+async function downloadRetouchImage(image: StoredImage, turn: ImageTurn, index: number) {
+  const src = resultImageSrc(image);
+  if (!src) {
+    throw new Error("未找到可保存的图片数据");
+  }
+  let href = src;
+  let objectUrl = "";
+  if (!src.startsWith("data:")) {
+    const blob = shouldUseAuthenticatedImageFallback(src)
+      ? await fetchAuthenticatedImageBlob(src)
+      : await fetch(src).then((response) => {
+          if (!response.ok) {
+            throw new Error("下载图片失败");
+          }
+          return response.blob();
+        });
+    objectUrl = URL.createObjectURL(blob);
+    href = objectUrl;
+  }
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = retouchImageFileName(turn, index, image.outputFormat || turn.outputFormat);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  if (objectUrl) {
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }
+}
+
+async function resultImageToFile(image: StoredImage, turn: ImageTurn, index: number) {
+  const fileName = retouchImageFileName(turn, index, image.outputFormat || turn.outputFormat);
+  if (image.b64_json) {
+    const blob = dataUrlToBlob(resultImageSrc(image));
+    return new File([blob], fileName, { type: blob.type || "image/png" });
+  }
+  if (!image.url) {
+    throw new Error("未找到可继续编辑的图片数据");
+  }
+  const blob = shouldUseAuthenticatedImageFallback(image.url)
+    ? await fetchAuthenticatedImageBlob(image.url)
+    : await fetch(image.url).then((response) => {
+        if (!response.ok) {
+          throw new Error("读取结果图片失败");
+        }
+        return response.blob();
+      });
+  return new File([blob], fileName, { type: blob.type || "image/png" });
+}
 function RetouchPageContent() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRef = useRef<RetouchCanvasHandle | null>(null);
@@ -336,6 +451,9 @@ function RetouchPageContent() {
   const [count, setCount] = useState("1");
   const [visibility, setVisibility] = useState<ImageVisibility>("private");
   const [submitState, setSubmitState] = useState<SubmitState>({ conversation: null, status: "idle" });
+  const [lightboxImages, setLightboxImages] = useState<RetouchLightboxImage[]>([]);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxIndex, setLightboxIndex] = useState(0);
 
   useEffect(() => {
     return () => {
@@ -347,8 +465,7 @@ function RetouchPageContent() {
 
   const finalPrompt = useMemo(() => buildRetouchPrompt(userPrompt, markerColor.name), [markerColor.name, userPrompt]);
   const isSubmitting = submitState.status === "submitting" || submitState.status === "polling";
-  const resultTurn = submitState.conversation?.turns[0] || null;
-  const resultImages = resultTurn?.images || [];
+  const resultTurns = [...(submitState.conversation?.turns || [])].reverse();
 
   const handleFileChange = async (file: File | undefined) => {
     if (!file) {
@@ -418,7 +535,7 @@ function RetouchPageContent() {
         ? RETOUCH_OUTPUT_FORMAT
         : undefined;
       const requestedCount = Math.max(1, Math.min(4, Number(count) || 1));
-      conversation = buildConversation({
+      const nextConversation = buildConversation({
         prompt: finalPrompt,
         markedDataUrl,
         markedFile,
@@ -428,9 +545,17 @@ function RetouchPageContent() {
         visibility,
         outputFormat: outputFormat || "png",
       });
+      const nextTurn = nextConversation.turns[0];
+      conversation = submitState.conversation
+        ? {
+            ...submitState.conversation,
+            updatedAt: nextConversation.updatedAt,
+            turns: [...submitState.conversation.turns, nextTurn],
+          }
+        : nextConversation;
       await saveImageConversation(conversation);
       setSubmitState({ conversation, status: "submitting" });
-      setImageTurnProgress(conversation.id, conversation.turns[0].id, {
+      setImageTurnProgress(conversation.id, nextTurn.id, {
         message: "正在提交局部修图任务",
         detail: "已生成标注图并准备上传",
       });
@@ -455,25 +580,59 @@ function RetouchPageContent() {
       if (isActiveCreationTask(task)) {
         await pollTask(conversation, taskId);
       } else {
-        clearImageTurnProgress(conversation.id, conversation.turns[0].id);
+        clearImageTurnProgress(conversation.id, nextTurn.id);
       }
     } catch (error) {
       const message = formatCreationTaskError(error, "提交局部修图失败");
       if (conversation) {
         const failed = markConversationError(conversation, message);
         await saveImageConversation(failed);
-        clearImageTurnProgress(failed.id, failed.turns[0].id);
+        clearImageTurnProgress(failed.id, failed.turns[failed.turns.length - 1]?.id || "");
         setSubmitState({ conversation: failed, status: "error" });
       } else {
-        setSubmitState({ conversation: null, status: "error" });
+        setSubmitState((current) => ({ ...current, status: "error" }));
       }
       toast.error(message);
     }
   };
 
+
+  const openLightbox = (images: RetouchLightboxImage[], index: number) => {
+    if (images.length === 0) {
+      return;
+    }
+    setLightboxImages(images);
+    setLightboxIndex(Math.max(0, Math.min(index, images.length - 1)));
+    setLightboxOpen(true);
+  };
+
+  const handleDownload = async (image: StoredImage, turn: ImageTurn, index: number) => {
+    try {
+      await downloadRetouchImage(image, turn, index);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "保存图片失败");
+    }
+  };
+
+  const handleContinueWithResult = async (image: StoredImage, turn: ImageTurn, index: number) => {
+    try {
+      const file = await resultImageToFile(image, turn, index);
+      if (sourceUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(sourceUrl);
+      }
+      setSourceFile(file);
+      setSourceUrl(URL.createObjectURL(file));
+      setUserPrompt("");
+      setHasMarks(false);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      toast.success("已载入结果图，可继续标注修改");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "载入结果图失败");
+    }
+  };
   return (
     <div className="min-h-[calc(100vh-72px)] bg-[#f5f7fa] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-[1560px] gap-5 xl:grid-cols-[minmax(0,1fr)_390px]">
+      <div className="mx-auto grid max-w-[1560px] gap-5">
         <section className="min-w-0 rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4">
             <div>
@@ -522,7 +681,7 @@ function RetouchPageContent() {
           )}
         </section>
 
-        <aside className="grid content-start gap-4">
+        <aside className="grid content-start gap-4 xl:grid-cols-[minmax(280px,360px)_minmax(280px,360px)_minmax(0,1fr)]">
           <Card className="rounded-[8px] bg-white">
             <CardHeader className="p-5 pb-3">
               <CardTitle className="flex items-center gap-2 text-base">
@@ -641,41 +800,95 @@ function RetouchPageContent() {
               </CardTitle>
             </CardHeader>
             <CardContent className="p-5 pt-0">
-              {resultTurn ? (
-                <div className="grid gap-3">
-                  <div className={cn(
-                    "rounded-[8px] px-3 py-2 text-sm",
-                    resultTurn.status === "success" ? "bg-emerald-50 text-emerald-700" :
-                      resultTurn.status === "error" ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-[#1456f0]",
-                  )}>
-                    {resultTurn.status === "success" ? "任务已完成" : resultTurn.status === "error" ? resultTurn.error || "任务失败" : "任务处理中"}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {resultImages.map((image, index) => {
-                      const src = resultImageSrc(image);
-                      return (
-                        <div key={image.id} className="overflow-hidden rounded-[8px] border border-slate-200 bg-slate-50">
-                          {src ? (
-                            <AuthenticatedImage src={src} alt={`局部修图结果 ${index + 1}`} className="aspect-square w-full object-cover" />
-                          ) : (
-                            <div className="flex aspect-square items-center justify-center text-xs text-slate-500">
-                              {image.status === "error" ? "失败" : "等待结果"}
+              {resultTurns.length > 0 ? (
+                <div className="grid gap-4">
+                  {resultTurns.map((turn, turnIndex) => {
+                    const lightboxItems = buildLightboxImages(turn);
+                    return (
+                      <article key={turn.id} className="grid gap-3 rounded-[8px] border border-slate-200 bg-slate-50 p-3">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-semibold text-slate-900">第 {resultTurns.length - turnIndex} 轮</span>
+                              <span className={cn(
+                                "rounded-full px-2 py-0.5 text-xs font-medium",
+                                turn.status === "success" ? "bg-emerald-50 text-emerald-700" :
+                                  turn.status === "error" ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-[#1456f0]",
+                              )}>
+                                {turn.status === "success" ? "任务已完成" : turn.status === "error" ? "任务失败" : "任务处理中"}
+                              </span>
                             </div>
-                          )}
+                            <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{turn.prompt}</p>
+                          </div>
+                          <span className="rounded-full bg-white px-2.5 py-1 text-xs text-slate-500 ring-1 ring-slate-200">
+                            {turn.images.length} 张
+                          </span>
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                          {turn.images.map((image, index) => {
+                            const src = resultImageSrc(image);
+                            const currentLightboxIndex = lightboxItems.findIndex((item) => item.id === image.id);
+                            return (
+                              <div key={image.id} className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm">
+                                {src ? (
+                                  <button
+                                    type="button"
+                                    className="group relative block w-full bg-slate-100"
+                                    onClick={() => openLightbox(lightboxItems, currentLightboxIndex >= 0 ? currentLightboxIndex : 0)}
+                                  >
+                                    <AuthenticatedImage src={src} alt={`局部修图结果 ${index + 1}`} className="aspect-[4/3] w-full object-contain" />
+                                    <span className="absolute inset-0 flex items-center justify-center bg-black/0 opacity-0 transition group-hover:bg-black/20 group-hover:opacity-100">
+                                      <span className="inline-flex items-center gap-2 rounded-full bg-white/95 px-3 py-1.5 text-xs font-medium text-slate-900 shadow-sm">
+                                        <Eye className="size-4" />
+                                        查看
+                                      </span>
+                                    </span>
+                                  </button>
+                                ) : (
+                                  <div className="flex aspect-[4/3] items-center justify-center bg-slate-100 text-xs text-slate-500">
+                                    {image.status === "error" ? image.error || "失败" : "等待结果"}
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-3">
+                                  <span className="text-xs text-slate-500">
+                                    {image.width && image.height ? `${image.width} x ${image.height}` : image.status === "success" ? "已保存到图库" : "处理中"}
+                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    <Button type="button" variant="outline" size="sm" disabled={!src} onClick={() => void handleDownload(image, turn, index)}>
+                                      <Download className="size-4" />
+                                      保存
+                                    </Button>
+                                    <Button type="button" variant="outline" size="sm" disabled={!src} onClick={() => void handleContinueWithResult(image, turn, index)}>
+                                      <MessageSquarePlus className="size-4" />
+                                      继续
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               ) : (
-                <p className="rounded-[8px] border border-dashed border-slate-200 bg-slate-50 px-3 py-6 text-center text-sm text-slate-500">
-                  提交后会在这里显示最近一次任务结果。
+                <p className="rounded-[8px] border border-dashed border-slate-200 bg-slate-50 px-3 py-10 text-center text-sm text-slate-500">
+                  提交后会像创作台一样按轮次显示结果，可查看、保存，也可继续编辑。
                 </p>
               )}
             </CardContent>
           </Card>
         </aside>
       </div>
+
+      <ImageLightbox
+        images={lightboxImages}
+        currentIndex={lightboxIndex}
+        open={lightboxOpen}
+        onOpenChange={setLightboxOpen}
+        onIndexChange={setLightboxIndex}
+      />
     </div>
   );
 }
@@ -693,3 +906,7 @@ export default function RetouchPage() {
 
   return <RetouchPageContent />;
 }
+
+
+
+
