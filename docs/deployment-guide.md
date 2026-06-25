@@ -182,10 +182,10 @@ source ~/.zshrc
 cd web && bun install && bun run build
 
 # 2. 构建后端（前端已嵌入）
-cd .. && go build -o chatgpt2api ./internal
+cd .. && go build -o chatgpt2api.exe ./internal
 
 # 3.1本地
-./chatgpt2api
+./chatgpt2api.exe
 
 # 3.2 服务器见 #### 4. 更新部署
 ```

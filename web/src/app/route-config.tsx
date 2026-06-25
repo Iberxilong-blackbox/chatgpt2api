@@ -10,6 +10,7 @@ import LogsPage from "@/app/logs/page";
 import ProfilePage from "@/app/profile/page";
 import RBACPage from "@/app/rbac/page";
 import RegisterPage from "@/app/register/page";
+import RetouchPage from "@/app/retouch/page";
 import SettingsPage from "@/app/settings/page";
 import UsersPage from "@/app/users/page";
 
@@ -32,5 +33,7 @@ export const appRoutes: AppRouteConfig[] = [
   { path: "/logs", element: <LogsPage />, requiredPath: "/logs" },
   { path: "/settings", element: <SettingsPage />, requiredPath: "/settings" },
   { path: "/image", element: <ImagePage />, requiredPath: "/image" },
+  { path: "/retouch", element: <RetouchPage />, requiredPath: "/image" },
   { path: "*", element: <HomePage /> },
 ];
+

@@ -30,8 +30,9 @@ import {
   type ColorTheme,
 } from "@/lib/theme";
 
-const navItems = [
+const navItems: NavItem[] = [
   { href: "/image", label: "创作台" },
+  { href: "/retouch", label: "局部修图", requiredPath: "/image" },
   { href: "/accounts", label: "号池管理" },
   { href: "/register", label: "注册机" },
   { href: "/image-manager", label: "图片库" },
@@ -100,6 +101,7 @@ function ThemeToggleButton({
 type NavItem = {
   href: string;
   label: string;
+  requiredPath?: string;
 };
 
 function isActivePath(pathname: string, href: string) {
@@ -356,7 +358,7 @@ export function TopNav() {
     return null;
   }
 
-  const visibleNavItems = navItems.filter((item) => canAccessPath(session, item.href));
+  const visibleNavItems = navItems.filter((item) => canAccessPath(session, item.requiredPath || item.href));
   const roleLabel = session.role === "admin" ? "管理员" : session.roleName || (session.provider === "linuxdo" ? "Linuxdo 用户" : "普通用户");
   const canAccessImageTasks = canAccessPath(session, "/image");
   const navToggleLabel = navCollapsed ? "展开导航栏" : "收起导航栏";
@@ -428,3 +430,4 @@ export function TopNav() {
     </header>
   );
 }
+
