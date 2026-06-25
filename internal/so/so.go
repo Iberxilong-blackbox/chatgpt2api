@@ -152,7 +152,9 @@ type regMapRef struct{ s *soSolver }
 // run 跑一段字节码。collector=true 时不设 success/error(不终止 VM,只填 regs);
 // collector=false 时设 success/error,期待 VM 通过 reg 3/4 退出。
 func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
-	s.regs = map[string]any{}
+	if collector {
+		s.regs = map[string]any{} // collector starts fresh; snapshot reuses collector regs
+	}
 	s.profile = browserfp.Get()
 	s.window = s.buildWindow()
 	s.done = false
