@@ -106,8 +106,6 @@ func (s *Session) Start() <-chan struct{} {
 		s.mu.Lock()
 		s.finished = true
 		s.err = err
-		// Diagnostic: dump collector-populated registers after run completes.
-		s.collector.dumpNonOpcodeRegs()
 		s.mu.Unlock()
 	}()
 	return ch
@@ -219,7 +217,6 @@ func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
 					v = args[0]
 				}
 				raw := toStr(v)
-				log.Printf("so: snapshot success callback — arg type=%T, toStr=%q, len=%d", v, raw, len(raw))
 				s.resolved = latin1Base64Encode(raw)
 			}
 			return nil, nil
@@ -287,26 +284,6 @@ func (s *soSolver) run(reqToken, dx string, collector bool) (string, error) {
 		return "", err
 	}
 	s.setReg(pcReg, queue)
-
-	// Diagnostic: trace VM instruction count and sample (both modes).
-	if len(queue) > 0 {
-		mode := "snapshot"
-		if collector {
-			mode = "collector"
-		}
-		log.Printf("so: %s queue len=%d, plain_len=%d, first=%v, last=%v",
-			mode, len(queue), len(plain), queue[0], queue[len(queue)-1])
-		// Dump first 10 instructions for snapshot mode to trace what window properties it reads.
-		if !collector {
-			dumpCount := 10
-			if len(queue) < dumpCount {
-				dumpCount = len(queue)
-			}
-			for i := 0; i < dumpCount; i++ {
-				log.Printf("so: snapshot ins[%d] = %v", i, queue[i])
-			}
-		}
-	}
 
 	if err := s.runQueue(); err != nil && !s.done {
 		if !collector {
@@ -942,47 +919,6 @@ var opcodeRegisterNums = map[int]bool{
 	16: true, 17: true, 18: true, 19: true, 20: true, 21: true, 22: true, 23: true,
 	24: true, 25: true, 26: true, 27: true, 28: true, 29: true, 30: true,
 	33: true, 34: true, 35: true,
-}
-
-// dumpNonOpcodeRegs logs a summary of collector-populated registers (those with
-// register numbers outside the opcode handler range). This helps diagnose whether
-// the collector actually stored data that the snapshot will later read.
-func (s *soSolver) dumpNonOpcodeRegs() {
-	type entry struct{ key, val string }
-	var entries []entry
-	nonOpcodeCount := 0
-	for k, v := range s.regs {
-		// Parse numeric register keys like "n:42" or "n:24.68"
-		numStr := strings.TrimPrefix(k, "n:")
-		if n, err := strconv.Atoi(numStr); err == nil && opcodeRegisterNums[n] {
-			continue
-		}
-		// Also try float parsing for keys like "n:24.68"
-		if f, err := strconv.ParseFloat(numStr, 64); err == nil {
-			if opcodeRegisterNums[int(f)] && f == float64(int(f)) {
-				continue
-			}
-		}
-		nonOpcodeCount++
-		valStr := fmt.Sprintf("%v", v)
-		if len(valStr) > 150 {
-			valStr = valStr[:150] + "..."
-		}
-		entries = append(entries, entry{k, valStr})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
-
-	log.Printf("so: collector regs dump — total_regs=%d, non_opcode=%d", len(s.regs), nonOpcodeCount)
-	limit := 30
-	if len(entries) < limit {
-		limit = len(entries)
-	}
-	for i := 0; i < limit; i++ {
-		log.Printf("so: collector reg [%s] = %s", entries[i].key, entries[i].val)
-	}
-	if len(entries) > limit {
-		log.Printf("so: collector reg ... +%d more entries omitted", len(entries)-limit)
-	}
 }
 
 // jsSetProp implements Reflect.set semantics for the SO VM: sets a property on

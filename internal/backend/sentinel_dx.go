@@ -3,6 +3,7 @@ package backend
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -13,10 +14,11 @@ import (
 // sosession holds the SO (Session Observer) VM state for one sentinel session.
 // The collector runs asynchronously; snapshot reuses collector's register state.
 type sosession struct {
-	session     *so.Session
-	chatToken   string // chat requirements token from finalize response
-	snapshotDX  string // snapshot_dx from prepare response
-	started     bool
+	session       *so.Session
+	chatToken     string // chat requirements token from finalize response
+	snapshotDX    string // snapshot_dx from prepare response
+	started       bool
+	cachedSOToken string // cached SO token to avoid re-running snapshot VM
 }
 
 // logSOEvent appends a structured JSON event line to data/logs/so_events.log.
@@ -66,6 +68,10 @@ func (s *sosession) buildSOToken(deviceID string) string {
 	if s == nil || !s.started || s.snapshotDX == "" {
 		return ""
 	}
+	// Return cached token if already built — avoids re-running the 500+ instruction VM.
+	if s.cachedSOToken != "" {
+		return s.cachedSOToken
+	}
 	soResult, err := s.session.Snapshot(s.snapshotDX)
 	if err != nil {
 		log.Printf("sentinel_dx: SO snapshot FAILED — %v", err)
@@ -77,11 +83,9 @@ func (s *sosession) buildSOToken(deviceID string) string {
 		return ""
 	}
 	log.Printf("sentinel_dx: SO snapshot OK — result len=%d", len(soResult))
-	// Diagnostic: decode the base64 snapshot result to see what the VM produced.
+	// Store decoded snapshot result in event log for audit; console only shows length.
 	if decoded, decErr := base64.StdEncoding.DecodeString(soResult); decErr == nil {
-		log.Printf("sentinel_dx: SO snapshot decoded — raw=%q, hex=%x", string(decoded), decoded)
-	} else {
-		log.Printf("sentinel_dx: SO snapshot base64 decode failed — %v", decErr)
+		logSOEvent("so_snapshot_ok", map[string]any{"result_len": len(soResult), "decoded_hex": fmt.Sprintf("%x", decoded)})
 	}
 
 	soToken, err := so.BuildToken(soResult, s.chatToken, deviceID, "chatgpt")
@@ -90,6 +94,7 @@ func (s *sosession) buildSOToken(deviceID string) string {
 		return ""
 	}
 	log.Printf("sentinel_dx: SO token built — len=%d", len(soToken))
+	s.cachedSOToken = soToken
 	return soToken
 }
 
