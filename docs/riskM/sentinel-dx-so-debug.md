@@ -1,8 +1,9 @@
 # Sentinel SO VM — 诊断与修复记录
 
 > **日期**：2026-06-25
-> **状态**：根因已定位 — `window["Reflect"]` 返回 nil，级联失败
+> **状态**：Fix #7 实施中 — 补齐 36 个 `__oai_so_*` 传感器字段 + `jsSetProp` guard
 > **参考**：[[aurora-sentinel-solution]] — SO VM 两阶段 (collector + snapshot) 设计
+> **关联**：[[sentinel-dx-simwindow-fix-plan]] — `__oai_so_*` 字段语义和合理值范围
 
 ---
 
@@ -101,7 +102,8 @@ window["Reflect"] = nil                    ← 根因: SO buildWindow() 缺少 R
 | 3 | 添加 D1/D2/D3 诊断日志 | 看到 collector 寄存器 + 回调参数 | ✅ collector 存标签名, 回调类型 string |
 | 4 | 添加 snapshot 前 10 条指令 dump (D4) | 精确定位失败点 | ✅ **根因确认**: `window.Reflect` 返回 nil |
 | 5 | 补齐 SO buildWindow 缺失的 JS 全局对象 | Reflect/Object 正常，后续指令仍有缺失 | ❌ 仍为 4 bytes ("_ABT") |
-| 6 | 添加 nil-property 追踪 (D5) | 精确定位全部缺失属性 | ⏳ 待部署 |
+| 6 | 添加 nil-property 追踪 (D5) | 精确定位全部缺失属性 | ✅ **定位 31 个缺失 key** — 全部是 `__oai_so_*` 传感器字段 |
+| 7 | 补齐 36 个 `__oai_so_*` 字段 + `jsSetProp` guard | 消灭全部 nil-props，产出完整 SO token | ⏳ 待部署 |
 
 ---
 
@@ -161,6 +163,116 @@ so: snapshot nil-prop #2: "anotherProp" (×12)
 - `(*soSolver).jsSetProp(obj, prop, value)` — 简化版 Reflect.set
 - `soObjectKeys(value)` — 简化版 Object.keys（跳过 `__prototype__` 内部 key）
 - `toStrSlice(values)` — `[]any` → `[]string` 转换
+
+---
+
+## 修复 #7：补齐 36 个 `__oai_so_*` 字段 + `jsSetProp` guard (2026-06-25)
+
+### 背景
+
+Fix #6 的 nil-property 追踪揭示了 31 个缺失的 window 属性，几乎全部是 `__oai_so_*` 传感器字段。这些字段在真实浏览器中由 collector 阶段的事件监听器通过 `Reflect.set` 动态写入。Aurora 原始 `so.go` 的 `buildWindow()` 也不包含这些字段——这是 SO VM 的**通用缺陷**，不仅限于本项目。
+
+参考 `sentinel-dx-simwindow-fix-plan.md`（Round 8 CDP Hook 捕获的真实浏览器数据），这些字段分为两类：
+
+### 改动 1：添加 17 个 null 字段到 `buildWindow()`
+
+SDK 注册了事件监听器但这些事件从未触发（如键盘、鼠标、hashchange）。浏览器端这些字段为 `null`。
+
+```go
+// so.go buildWindow() — Type A: null fields
+nullSOFields := []string{
+    "__oai_so_h", "__oai_so_hi", "__oai_so_hp", "__oai_so_hw",  // hash 事件
+    "__oai_so_ht", "__oai_so_hc",                                 // hashchange/touch
+    "__oai_so_s", "__oai_so_t0",                                  // 随机种子/时间基准 (VM opcode 填充)
+    "__oai_so_k", "__oai_so_kp",                                  // 键盘事件
+    "__oai_so_p", "__oai_so_pc",                                  // 指针事件
+    "__oai_so_fs", "__oai_so_fs2", "__oai_so_fn",                // 字体检测
+    "__oai_so_bc", "__oai_so_bm",                                 // 电池状态
+}
+```
+
+### 改动 2：添加 19 个交互数据字段到 `buildWindow()`
+
+这些字段在浏览器中有真实值（时间戳、计数、坐标），Go VM 需要合成合理值。
+
+| 字段 | 含义 | 合成策略 |
+|------|------|---------|
+| `__oai_so_wl` | window load perf.now | `500 + rand(0, 2000)` ms |
+| `__oai_so_m` | mouse move perf.now | `_wl + rand(5000, 300000)` ms |
+| `__oai_so_ss` | scroll perf.now | `_wl + rand(1000, _m-_wl)` ms |
+| `__oai_so_ss2` | scroll Date.now | `nowUnixMs - _wl + _ss` |
+| `__oai_so_sn` | scroll 事件计数 | `rand(10, 200)` |
+| `__oai_so_cs` | click perf.now | `_wl + rand(500, _ss-_wl)` ms |
+| `__oai_so_cs2` | click Date.now | `nowUnixMs - _wl + _cs` |
+| `__oai_so_cn` | click 事件计数 | `rand(3, 100)` |
+| `__oai_so_st` | scrollTop | `rand(0, 1000)` |
+| `__oai_so_sw` | scrollWidth | `rand(0, 100)` |
+| `__oai_so_sp` | scrollParent top | `0`（浏览器也是 0） |
+| `__oai_so_spt` | scrollParent top | `rand(0, 5)` |
+| `__oai_so_sx0` | 鼠标起始 x | `rand(0, 1920)` |
+| `__oai_so_sy0` | 鼠标起始 y | `rand(0, 1080)` |
+| `__oai_so_lx` | 最后鼠标 x | `_sx0 + rand(-100, 100)` |
+| `__oai_so_ly` | 最后鼠标 y | `_sy0 + rand(-100, 100)` |
+| `__oai_so_i` | 输入事件总数 | `_sn + _cn + rand(5, 50)` |
+| `__oai_so_we` | window 事件计数 | `rand(1, 20)` |
+| `__oai_so_wb` | blur 事件计数 | `rand(0, 3)` |
+
+**时间戳一致性约束**：`_ss2` 和 `_cs2` 是 `Date.now()` 值，`_ss` 和 `_cs` 是 `performance.now()` 值。两者相差约等于页面加载时的 `Date.now()` 值（`pageLoadDateNow`）。
+
+### 改动 3：添加 3 个缺失的工具对象
+
+| 属性 | 实现 | 说明 |
+|------|------|------|
+| `removeEventListener` | `vmFunc` no-op | DOM 方法，mock 中无需实际操作 |
+| `Date` | `vmFunc` → JS 格式日期字符串 | `"Thu Jun 25 2026 14:17:15 GMT+0000 (Coordinated Universal Time)"` |
+| `Math.sqrt` | `vmFunc` → `math.Sqrt(n)` | 加到现有 Math mock 中 |
+
+### 改动 4：`jsSetProp` guard — 保护预填充值不被 VM 覆盖
+
+**核心问题**：VM 在 collector 初始化阶段会通过 `Reflect.set` 将所有 `__oai_so_*` 字段设为 `0` 或 `null`。如果我们的预填充值被覆盖，snapshot 读到的又会是全零。
+
+**解决**：在 `jsSetProp()` 中加 guard——当 VM 试图用 0/nil 覆盖已存在的**非零值**时，拒绝写入。
+
+```go
+// so.go jsSetProp() — guard logic
+case map[string]any:
+    key := toStr(prop)
+    if isZeroValue(value) {
+        if existing, ok := target[key]; ok && !isZeroValue(existing) {
+            return true // reject: keep existing non-zero value
+        }
+    }
+    target[key] = value
+    return true
+```
+
+`isZeroValue()` 定义：`nil`, `float64(0)`, `0` (int), `""` (空字符串), `false` 均为零值。
+
+**设计意图**：
+- nil init 值被 VM 写入非零值（如 `_s` = Math.random）→ **放行**（VM 计算的值是正确的）
+- 非零 init 值被 VM 写入 0/nil → **拒绝**（保留我们的合成值）
+- nil init 值被 VM 写入 0/nil → **放行**（本来就是 nil）
+
+### 与旧 turnstile 方案的对比
+
+| 维度 | 旧方案 (simwindow fix plan Round 2) | 新方案 (本修复) |
+|------|-----------------------------------|----------------|
+| 目标文件 | `sentinel_dx.go` turnstile VM | `so.go` SO VM |
+| 数据模型 | `turnstileOrderedMap` (有序) | `map[string]any` (无序) |
+| 问题 | key 顺序不一致 + `_h` 函数序列化失败 | key 顺序不重要（SO 不走 JSON.stringify） |
+| guard 位置 | opcode 7 handler 内联判断 | `jsSetProp` 集中 guard |
+
+### 预期效果
+
+部署后 snapshot 的 nil-props 应从 31 → 0，snapshot 输出从 ~275 bytes 增长到 >= 700 bytes +。最终目标是 OpenAI 服务端接受 SO token（`so_token_present` 在 extra-data header 为 true 时服务端通过校验）。
+
+### 风险
+
+| 风险 | 概率 | 缓解 |
+|------|:---:|------|
+| 纯随机值被服务端检测异常 | 中 | 值范围基于 Round 8 CDP 真实数据 |
+| guard 阻止了 VM 有意义的覆盖 | 低 | guard 只阻止非零→零覆盖，不阻止零→非零 |
+| 时间戳不一致被检测 | 低 | `pageLoadDateNow` 统一基准 |
 
 ---
 

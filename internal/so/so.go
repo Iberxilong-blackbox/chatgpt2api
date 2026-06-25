@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"regexp"
 	"sort"
@@ -806,6 +807,16 @@ func (s *soSolver) buildWindow() map[string]any {
 			}
 			return n, nil
 		}),
+		"sqrt": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return float64(0), nil
+			}
+			n, ok := s.asNumber(args[0])
+			if !ok || n < 0 {
+				return float64(0), nil
+			}
+			return math.Sqrt(n), nil
+		}),
 	}
 	mockWin["JSON"] = map[string]any{
 		"parse": vmFunc(func(args ...any) (any, error) {
@@ -842,6 +853,73 @@ func (s *soSolver) buildWindow() map[string]any {
 			}
 		}),
 	}
+	// ─── __oai_so_* sensor fields ─────────────────────────────────────────────
+	// The snapshot bytecode reads these window properties to build the encrypted
+	// SO token. In a real browser, the collector phase's event listeners set
+	// them via Reflect.set over 60 seconds. Our mock has no event loop, so we
+	// pre-populate with realistic synthetic values. The jsSetProp guard protects
+	// non-zero values from being cleared by VM init-phase Reflect.set calls.
+	//
+	// Values are aligned with Round 8 CDP Hook captures from a real browser.
+	// See: docs/plan/sentinel-dx-simwindow-fix-plan.md
+
+	// Type A: null fields — event listeners registered but never triggered (17)
+	nullSOFields := []string{
+		"__oai_so_h", "__oai_so_hi", "__oai_so_hp", "__oai_so_hw",
+		"__oai_so_ht", "__oai_so_hc",
+		"__oai_so_s", "__oai_so_t0",
+		"__oai_so_k", "__oai_so_kp",
+		"__oai_so_p", "__oai_so_pc",
+		"__oai_so_fs", "__oai_so_fs2", "__oai_so_fn",
+		"__oai_so_bc", "__oai_so_bm",
+	}
+	for _, f := range nullSOFields {
+		mockWin[f] = nil
+	}
+
+	// Type B: interaction data — synthesize realistic values (19 fields)
+	wlSO := 500.0 + rand.Float64()*2000.0                          // window load perf.now: 0.5-2.5s
+	mSO := wlSO + 5000.0 + rand.Float64()*295000.0                  // mouse move: 5-300s after load
+	ssSO := wlSO + 1000.0 + rand.Float64()*(mSO-wlSO-1000.0)        // scroll: 1s after load → mouse
+	pageLoadDateNowSO := float64(time.Now().UnixMilli()) - wlSO
+	snSO := float64(10 + rand.Intn(191))                             // scroll count: 10-200
+	csSO := wlSO + 500.0 + rand.Float64()*(ssSO-wlSO-500.0)         // click: 0.5s after load → scroll
+	cnSO := float64(3 + rand.Intn(98))                               // click count: 3-100
+	sx0SO := float64(rand.Intn(1920))                                // start mouse x: 0-1919
+	sy0SO := float64(rand.Intn(1080))                                // start mouse y: 0-1079
+
+	mockWin["__oai_so_wl"] = wlSO
+	mockWin["__oai_so_m"] = mSO
+	mockWin["__oai_so_ss"] = ssSO
+	mockWin["__oai_so_ss2"] = pageLoadDateNowSO + ssSO
+	mockWin["__oai_so_sn"] = snSO
+	mockWin["__oai_so_cs"] = csSO
+	mockWin["__oai_so_cs2"] = pageLoadDateNowSO + csSO
+	mockWin["__oai_so_cn"] = cnSO
+	mockWin["__oai_so_st"] = float64(rand.Intn(1001))                // scrollTop: 0-1000
+	mockWin["__oai_so_sw"] = float64(rand.Intn(100))                 // scrollWidth: 0-99
+	mockWin["__oai_so_sp"] = float64(0)                               // scrollParent: always 0
+	mockWin["__oai_so_spt"] = float64(rand.Intn(5))                  // scrollParentTop: 0-4
+	mockWin["__oai_so_sx0"] = sx0SO
+	mockWin["__oai_so_sy0"] = sy0SO
+	mockWin["__oai_so_lx"] = sx0SO + rand.Float64()*200.0 - 100.0    // last x: start ± 100
+	mockWin["__oai_so_ly"] = sy0SO + rand.Float64()*200.0 - 100.0    // last y: start ± 100
+	mockWin["__oai_so_i"] = snSO + cnSO + float64(5+rand.Intn(46))   // input total: sn+cn+5~50
+	mockWin["__oai_so_we"] = float64(1 + rand.Intn(20))              // window events: 1-20
+	mockWin["__oai_so_wb"] = float64(rand.Intn(4))                   // blur: 0-3
+
+	// Utility: removeEventListener (no-op in mock)
+	mockWin["removeEventListener"] = vmFunc(func(args ...any) (any, error) {
+		return nil, nil
+	})
+
+	// Utility: Date constructor — returns JS-style date string when called as function
+	mockWin["Date"] = vmFunc(func(args ...any) (any, error) {
+		t := time.Now().UTC()
+		return fmt.Sprintf("%s GMT+0000 (Coordinated Universal Time)",
+			t.Format("Mon Jan 02 2006 15:04:05")), nil
+	})
+
 	mockWin["0"] = mockWin
 
 	mockWin["window"] = mockWin
@@ -910,17 +988,50 @@ func (s *soSolver) dumpNonOpcodeRegs() {
 // jsSetProp implements Reflect.set semantics for the SO VM: sets a property on
 // a target object (map or regMapRef). Simplified version — no ordered-key tracking
 // since the SO VM does not serialize window through JSON.stringify like turnstile.
+//
+// Guard: protects non-zero pre-populated values from being overwritten with zero/nil
+// by the VM initialization phase. In a real browser, event listeners would later set
+// real values via Reflect.set, but our mock has no event loop. Without this guard,
+// the VM's Reflect.set calls during collector/snapshot init overwrite all synthetic
+// __oai_so_* values with 0 or nil, producing an empty 8-byte result.
 func (s *soSolver) jsSetProp(obj any, prop any, value any) bool {
 	switch target := obj.(type) {
 	case regMapRef:
 		target.s.setReg(prop, value)
 		return true
 	case map[string]any:
-		target[toStr(prop)] = value
+		key := toStr(prop)
+		if isZeroValue(value) {
+			if existing, ok := target[key]; ok && !isZeroValue(existing) {
+				return true // reject: keep existing non-zero value
+			}
+		}
+		target[key] = value
 		return true
 	default:
 		return false
 	}
+}
+
+// isZeroValue returns true if v is a zero/nil/empty value that the VM init phase
+// would write to clear sensor registers before event listeners fire.
+func isZeroValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch val := v.(type) {
+	case float64:
+		return val == 0
+	case int:
+		return val == 0
+	case int64:
+		return val == 0
+	case string:
+		return val == ""
+	case bool:
+		return !val
+	}
+	return false
 }
 
 // soObjectKeys returns the enumerable keys of a map value for Object.keys().
