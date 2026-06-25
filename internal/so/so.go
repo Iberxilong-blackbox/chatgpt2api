@@ -36,8 +36,31 @@ const (
 	xorKeyReg   = 16 // XOR 解密密钥
 	successReg  = 3  // VM 成功退出回调(snapshot 用)
 	errorReg    = 4  // VM 失败退出回调(snapshot 用)
-	callbackReg = 30 // DEF_FUNC 用的回调 slot
+	callbackReg     = 30 // DEF_FUNC 用的回调 slot
+	prototypeMetaSO = "__prototype__"
 )
+
+// authNavigatorPrototypeKeysSO is the list of navigator prototype property names
+// that the sentinel SDK checks. The SO snapshot bytecode may iterate over these.
+// Source: turnstile authNavigatorPrototypeKeys.
+var authNavigatorPrototypeKeysSO = []string{
+	"vendorSub", "productSub", "vendor", "maxTouchPoints", "scheduling", "userActivation", "geolocation",
+	"doNotTrack", "connection", "plugins", "mimeTypes", "pdfViewerEnabled", "webkitTemporaryStorage",
+	"webkitPersistentStorage", "hardwareConcurrency", "cookieEnabled", "appCodeName", "appName",
+	"appVersion", "platform", "product", "userAgent", "language", "languages", "onLine", "webdriver",
+	"getGamepads", "javaEnabled", "sendBeacon", "vibrate", "windowControlsOverlay",
+	"deprecatedRunAdAuctionEnforcesKAnonymity", "protectedAudience", "bluetooth", "storageBuckets",
+	"clipboard", "credentials", "keyboard", "managed", "mediaDevices", "storage", "serviceWorker",
+	"virtualKeyboard", "wakeLock", "deviceMemory", "userAgentData", "login", "ink", "mediaCapabilities",
+	"devicePosture", "hid", "locks", "gpu", "mediaSession", "permissions", "presentation", "serial",
+	"usb", "xr", "adAuctionComponents", "runAdAuction", "canLoadAdAuctionFencedFrame", "canShare",
+	"share", "clearAppBadge", "getBattery", "getUserMedia", "requestMIDIAccess",
+	"requestMediaKeySystemAccess", "setAppBadge", "webkitGetUserMedia",
+	"clearOriginJoinedAdInterestGroups", "createAuctionNonce", "joinAdInterestGroup",
+	"leaveAdInterestGroup", "updateAdInterestGroups", "deprecatedReplaceInURN", "deprecatedURNToURL",
+	"getInstalledRelatedApps", "getInterestGroupAdAuctionData", "registerProtocolHandler",
+	"unregisterProtocolHandler",
+}
 
 // ─── 公开 API ────────────────────────────────────────────────────────────────
 
@@ -711,6 +734,95 @@ func (s *soSolver) buildWindow() map[string]any {
 		"origin":          "https://chatgpt.com",
 		"isSecureContext": true,
 	}
+
+	// navigator prototype — SO snapshot bytecode may iterate navigator props.
+	navProto = map[string]any{}
+	for _, key := range authNavigatorPrototypeKeysSO {
+		navProto[key] = nil
+	}
+	nav[prototypeMetaSO] = navProto
+
+	// JS global objects — aligned with turnstile buildWindow.
+	// The snapshot bytecode reads e.g. window["Reflect"]["set"]; without these
+	// the VM produces a broken 4-byte result.
+	mockWin["Reflect"] = map[string]any{
+		"set": vmFunc(func(args ...any) (any, error) {
+			if len(args) < 3 {
+				return true, nil
+			}
+			return s.jsSetProp(args[0], args[1], args[2]), nil
+		}),
+	}
+	mockWin["Object"] = map[string]any{
+		"keys": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return []any{}, nil
+			}
+			return soObjectKeys(args[0]), nil
+		}),
+		"getPrototypeOf": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return nil, nil
+			}
+			if target, ok := args[0].(map[string]any); ok {
+				return target[prototypeMetaSO], nil
+			}
+			return nil, nil
+		}),
+		"create": vmFunc(func(args ...any) (any, error) {
+			return map[string]any{}, nil
+		}),
+	}
+	mockWin["Math"] = map[string]any{
+		"random": vmFunc(func(args ...any) (any, error) { return rand.Float64(), nil }),
+		"abs": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return float64(0), nil
+			}
+			n, _ := s.asNumber(args[0])
+			if n < 0 {
+				return -n, nil
+			}
+			return n, nil
+		}),
+	}
+	mockWin["JSON"] = map[string]any{
+		"parse": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return nil, nil
+			}
+			var out any
+			if err := json.Unmarshal([]byte(s.jsToString(args[0])), &out); err != nil {
+				return nil, err
+			}
+			return out, nil
+		}),
+		"stringify": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return "null", nil
+			}
+			body, err := jsJSONStringify(args[0])
+			if err != nil {
+				return nil, err
+			}
+			return body, nil
+		}),
+	}
+	mockWin["Array"] = map[string]any{
+		"from": vmFunc(func(args ...any) (any, error) {
+			if len(args) == 0 {
+				return []any{}, nil
+			}
+			switch value := args[0].(type) {
+			case []any:
+				return append([]any{}, value...), nil
+			default:
+				return []any{}, nil
+			}
+		}),
+	}
+	mockWin["0"] = mockWin
+
 	mockWin["window"] = mockWin
 	mockWin["self"] = mockWin
 	mockWin["globalThis"] = mockWin
@@ -772,6 +884,51 @@ func (s *soSolver) dumpNonOpcodeRegs() {
 	if len(entries) > limit {
 		log.Printf("so: collector reg ... +%d more entries omitted", len(entries)-limit)
 	}
+}
+
+// jsSetProp implements Reflect.set semantics for the SO VM: sets a property on
+// a target object (map or regMapRef). Simplified version — no ordered-key tracking
+// since the SO VM does not serialize window through JSON.stringify like turnstile.
+func (s *soSolver) jsSetProp(obj any, prop any, value any) bool {
+	switch target := obj.(type) {
+	case regMapRef:
+		target.s.setReg(prop, value)
+		return true
+	case map[string]any:
+		target[toStr(prop)] = value
+		return true
+	default:
+		return false
+	}
+}
+
+// soObjectKeys returns the enumerable keys of a map value for Object.keys().
+// Simplified version without orderedKeysMeta — SO VM does not need key ordering.
+func soObjectKeys(value any) []any {
+	switch obj := value.(type) {
+	case map[string]any:
+		// Skip internal meta keys.
+		keys := make([]any, 0, len(obj))
+		for k := range obj {
+			if k == prototypeMetaSO {
+				continue
+			}
+			keys = append(keys, k)
+		}
+		sort.Strings(toStrSlice(keys))
+		return keys
+	default:
+		return []any{}
+	}
+}
+
+// toStrSlice converts []any to []string for sorting.
+func toStrSlice(values []any) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		out = append(out, toStr(v))
+	}
+	return out
 }
 
 func (s *soSolver) runQueue() error {
