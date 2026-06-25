@@ -3784,6 +3784,81 @@ func TestCreationTaskSubmitLogsRequestAndPollingAvoidsGenericAuditNoise(t *testi
 	}
 }
 
+func TestCreationTaskModelSelectionPermission(t *testing.T) {
+	app := newTestApp(t)
+	defer app.Close()
+
+	_, rawKey, err := app.auth.CreateAPIKey(service.AuthRoleUser, "frontend", service.AuthOwner{})
+	if err != nil {
+		t.Fatalf("CreateAPIKey() error = %v", err)
+	}
+	assertCreationChatTaskModel(t, app, "Bearer "+rawKey, "gpt-5", util.ImageModelAuto)
+	assertCreationImageTaskModel(t, app, "Bearer "+rawKey, "codex-gpt-image-2", util.ImageModelAuto)
+
+	user, _, err := app.auth.RegisterPasswordUser("model_select_user", "Password123", "Model Select")
+	if err != nil {
+		t.Fatalf("RegisterPasswordUser() error = %v", err)
+	}
+	role, err := app.auth.CreateRole(map[string]any{
+		"name":       "model selection",
+		"menu_paths": []string{"/image"},
+		"api_permissions": []string{
+			service.APIPermissionKey(http.MethodPost, "/api/creation-tasks"),
+			service.APIPermissionKey(http.MethodPost, "/api/creation-tasks/model-selection"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRole() error = %v", err)
+	}
+	if updated := app.auth.UpdateUser(user.ID, map[string]any{"role_id": role["id"]}); updated == nil {
+		t.Fatal("UpdateUser(role) returned nil")
+	}
+	_, userToken, err := app.auth.LoginPassword("model_select_user", "Password123")
+	if err != nil {
+		t.Fatalf("LoginPassword(user) error = %v", err)
+	}
+	assertCreationChatTaskModel(t, app, "Bearer "+userToken, "gpt-5", "gpt-5")
+
+	assertCreationChatTaskModel(t, app, adminAuthHeader(t, app), "gpt-5", "gpt-5")
+}
+
+func assertCreationChatTaskModel(t *testing.T, app *App, authHeader, requestedModel, wantModel string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"client_task_id":"chat-%d","prompt":"hello","model":"%s","messages":[{"role":"user","content":"hello"}]}`, time.Now().UnixNano(), requestedModel)
+	req := httptest.NewRequest(http.MethodPost, "/api/creation-tasks/chat-completions", strings.NewReader(body))
+	req.Header.Set("Authorization", authHeader)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("submit chat creation task status = %d body = %s", res.Code, res.Body.String())
+	}
+	var task map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &task); err != nil {
+		t.Fatalf("chat task json: %v", err)
+	}
+	if task["model"] != wantModel {
+		t.Fatalf("chat task model = %#v, want %q", task["model"], wantModel)
+	}
+}
+
+func assertCreationImageTaskModel(t *testing.T, app *App, authHeader, requestedModel, wantModel string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"client_task_id":"image-%d","prompt":"draw","model":"%s"}`, time.Now().UnixNano(), requestedModel)
+	req := httptest.NewRequest(http.MethodPost, "/api/creation-tasks/image-generations", strings.NewReader(body))
+	req.Header.Set("Authorization", authHeader)
+	res := httptest.NewRecorder()
+	app.Handler().ServeHTTP(res, req)
+	if res.Code != http.StatusOK {
+		t.Fatalf("submit image creation task status = %d body = %s", res.Code, res.Body.String())
+	}
+	var task map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &task); err != nil {
+		t.Fatalf("image task json: %v", err)
+	}
+	if task["model"] != wantModel {
+		t.Fatalf("image task model = %#v, want %q", task["model"], wantModel)
+	}
+}
 func TestLogGovernanceEndpointCleansOldLogs(t *testing.T) {
 	app := newTestApp(t)
 	defer app.Close()

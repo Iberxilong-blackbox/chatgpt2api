@@ -64,6 +64,7 @@ type ImageComposerProps = {
   imageCount: string;
   imageModel: ImageModel;
   imageModelOptions: ReadonlyArray<{ value: ImageModel; label: string }>;
+  canSelectModel: boolean;
   imageSizeMode: ImageSizeMode;
   imageAspectRatio: ImageAspectRatio;
   imageResolution: ImageResolution;
@@ -283,6 +284,7 @@ export function ImageComposer({
   imageCount,
   imageModel,
   imageModelOptions,
+  canSelectModel,
   imageSizeMode,
   imageAspectRatio,
   imageResolution,
@@ -760,6 +762,7 @@ export function ImageComposer({
                     );
                   })}
                 </div>
+                {canSelectModel ? (
                 <div ref={modelMenuRef} className="relative shrink-0">
                   <button
                     type="button"
@@ -816,6 +819,7 @@ export function ImageComposer({
                     </div>
                   ) : null}
                 </div>
+                ) : null}
                 <button
                   type="button"
                   className="inline-flex size-9 shrink-0 items-center justify-center gap-1.5 rounded-full text-[#686b73] transition hover:bg-black/[0.05] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1456f0]/30 dark:text-muted-foreground dark:hover:bg-accent/60 dark:hover:text-foreground sm:h-8 sm:w-auto sm:border sm:border-[#e5e7eb] sm:bg-white sm:px-3 sm:text-xs sm:font-medium sm:text-[#45515e] sm:dark:border-border sm:dark:bg-background/70 sm:dark:text-muted-foreground"

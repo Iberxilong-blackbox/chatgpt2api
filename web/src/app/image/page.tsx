@@ -89,6 +89,7 @@ import { getManagedImagePathFromUrl } from "@/lib/image-path";
 import { authSessionFromLoginResponse, setVerifiedAuthSession } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import { useAuthGuard } from "@/lib/use-auth-guard";
+import { hasAPIPermission } from "@/store/auth";
 import {
   ACTIVE_IMAGE_CONVERSATION_STORAGE_KEY,
   clearImageConversations,
@@ -1115,6 +1116,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     shareReferenceImages: false,
   });
   const canInspectAccounts = session.role === "admin" || session.apiPermissions.includes("get/api/accounts");
+  const canSelectCreationModel = hasAPIPermission(session, "POST", "/api/creation-tasks/model-selection");
 
   const parsedCount = useMemo(() => normalizeRequestedImageCount(imageCount), [imageCount]);
   const imageSize = useMemo(
@@ -1473,6 +1475,14 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
   }, [composerMode]);
 
   useEffect(() => {
+    if (!canSelectCreationModel) {
+      const defaultModel = composerMode === "chat" ? DEFAULT_CHAT_MODEL : DEFAULT_IMAGE_MODEL;
+      if (imageModel !== defaultModel) {
+        setImageModel(defaultModel);
+      }
+      return;
+    }
+
     if (composerMode === "chat") {
       if (!isChatModel(imageModel)) {
         setImageModel(DEFAULT_CHAT_MODEL);
@@ -1483,7 +1493,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
     if (!isImageCreationModel(imageModel)) {
       setImageModel(DEFAULT_IMAGE_MODEL);
     }
-  }, [composerMode, imageModel]);
+  }, [canSelectCreationModel, composerMode, imageModel]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -1962,8 +1972,11 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       conversationId,
       turnId,
       prompt: targetTurn.prompt,
-      model:
-        targetTurn.mode === "chat"
+      model: !canSelectCreationModel
+        ? targetTurn.mode === "chat"
+          ? DEFAULT_CHAT_MODEL
+          : DEFAULT_IMAGE_MODEL
+        : targetTurn.mode === "chat"
           ? isChatModel(targetTurn.model)
             ? targetTurn.model
             : DEFAULT_CHAT_MODEL
@@ -1986,7 +1999,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       visibility: targetTurn.visibility || "private",
       referenceImages: targetTurn.mode === "chat" ? [] : targetTurn.referenceImages,
     });
-  }, []);
+  }, [canSelectCreationModel]);
 
   const handleEditReferenceImageChange = useCallback(async (files: File[]) => {
     if (files.length === 0) {
@@ -2626,6 +2639,17 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       const imageCount = draft.mode === "chat" ? 1 : normalizeRequestedImageCount(draft.count);
       const mode = draft.mode === "chat" ? "chat" : getComposerConversationMode("image", draft.referenceImages);
       const referenceImages = usesReferenceImages(mode) ? draft.referenceImages : [];
+      const draftModel = !canSelectCreationModel
+        ? mode === "chat"
+          ? DEFAULT_CHAT_MODEL
+          : DEFAULT_IMAGE_MODEL
+        : mode === "chat"
+          ? isChatModel(draft.model)
+            ? draft.model
+            : DEFAULT_CHAT_MODEL
+          : isImageCreationModel(draft.model)
+            ? draft.model
+            : DEFAULT_IMAGE_MODEL;
       const rawDraftSizeSelection = {
         mode: draft.sizeMode,
         aspectRatio: draft.aspectRatio,
@@ -2637,7 +2661,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
       const draftSizeRequest =
         mode === "chat"
           ? null
-          : buildEffectiveImageSizeRequest(draft.model, rawDraftSizeSelection);
+          : buildEffectiveImageSizeRequest(draftModel, rawDraftSizeSelection);
       if (
         mode !== "chat" &&
         draftSizeRequest &&
@@ -2661,12 +2685,12 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
         return;
       }
       const draftOutputFormat =
-        mode === "chat" ? undefined : imageOutputFormatForModel(draft.model, draft.outputFormat);
+        mode === "chat" ? undefined : imageOutputFormatForModel(draftModel, draft.outputFormat);
       const draftOutputCompression =
         draftOutputFormat === undefined
           ? undefined
-          : imageOutputCompressionForModel(draft.model, draftOutputFormat, draft.outputCompression);
-      if (mode !== "chat" && supportsStructuredImageParameters(draft.model) && isHighResolutionImageSize(draftImageSize)) {
+          : imageOutputCompressionForModel(draftModel, draftOutputFormat, draft.outputCompression);
+      if (mode !== "chat" && supportsStructuredImageParameters(draftModel) && isHighResolutionImageSize(draftImageSize)) {
         const sizeLabel = formatImageSizeDisplay(draftImageSize);
         if (regenerate) {
           toast.message(`${sizeLabel} 属于 Codex 结构化高分辨率任务，会直接提交给上游判断。`);
@@ -2689,7 +2713,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
             const baseTurn = {
               ...turn,
               prompt,
-              model: draft.model,
+              model: draftModel,
               mode,
               referenceImages,
               count: imageCount,
@@ -2734,7 +2758,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
         toast.success("已保存编辑设置");
       }
     },
-    [editingTurnDraft, runConversationQueue, updateConversation],
+    [canSelectCreationModel, editingTurnDraft, runConversationQueue, updateConversation],
   );
 
   const handleSubmit = async () => {
@@ -2757,8 +2781,11 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
 
     try {
       const effectiveImageMode = getComposerConversationMode(composerMode, referenceImages);
-      const effectiveModel =
-        effectiveImageMode === "chat"
+      const effectiveModel = !canSelectCreationModel
+        ? effectiveImageMode === "chat"
+          ? DEFAULT_CHAT_MODEL
+          : DEFAULT_IMAGE_MODEL
+        : effectiveImageMode === "chat"
           ? isChatModel(imageModel)
             ? imageModel
             : DEFAULT_CHAT_MODEL
@@ -2945,7 +2972,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
               <DialogHeader className="px-6 pt-6 pb-2">
                 <DialogTitle>{editingTurnDraft.mode === "chat" ? "编辑对话" : "编辑生成设置"}</DialogTitle>
                 <DialogDescription>
-                  {editingTurnDraft.mode === "chat" ? "修改本轮消息和对话模型。" : "修改本轮提示词、参考图和生成参数。"}
+                  {editingTurnDraft.mode === "chat" ? (canSelectCreationModel ? "修改本轮消息和对话模型。" : "修改本轮消息。") : "修改本轮提示词、参考图和生成参数。"}
                 </DialogDescription>
               </DialogHeader>
               <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
@@ -3046,6 +3073,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
                       />
                     </label>
                     ) : null}
+                    {canSelectCreationModel ? (
                     <label className="flex flex-col gap-2 text-sm font-medium text-stone-700">
                       模型
                       <Select
@@ -3070,6 +3098,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
                         </SelectContent>
                       </Select>
                     </label>
+                    ) : null}
                     {editingTurnDraft.mode !== "chat" && editingDraftEffectiveSizeSelection ? (
                       <>
                         <div className="rounded-2xl border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-900 sm:col-span-2 lg:col-span-4">
@@ -3389,6 +3418,7 @@ function ImagePageContent({ session }: { session: NonNullable<ReturnType<typeof 
                 imageCount={imageCount}
                 imageModel={imageModel}
                 imageModelOptions={composerModelOptions}
+                canSelectModel={canSelectCreationModel}
                 imageSizeMode={imageSizeMode}
                 imageAspectRatio={imageAspectRatio}
                 imageResolution={imageResolution}

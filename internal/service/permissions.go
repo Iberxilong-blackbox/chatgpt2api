@@ -50,6 +50,7 @@ var apiPermissionCatalog = []APIPermission{
 	apiPermission("POST", "/v1/messages", "Messages", "创作", false),
 	apiPermission("GET", "/api/creation-tasks", "查看创作任务", "创作", true),
 	apiPermission("POST", "/api/creation-tasks", "提交/取消创作任务", "创作", true),
+	apiPermission("POST", "/api/creation-tasks/model-selection", "选择创作模型", "创作", false),
 	apiPermission("GET", "/api/images", "查看图片库", "图片库", false),
 	apiPermission("PATCH", "/api/images/visibility", "发布/收回图片", "图片库", false),
 	apiPermission("DELETE", "/api/images", "删除图片", "图片库", false),
