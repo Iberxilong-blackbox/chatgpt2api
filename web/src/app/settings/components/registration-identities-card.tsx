@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { CheckCircle2, LoaderCircle, Plus, ShieldCheck, Trash2, Upload, XCircle } from "lucide-react";
+import { CheckCircle2, ChevronLeft, ChevronRight, LoaderCircle, Plus, ShieldCheck, Trash2, Upload, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +27,8 @@ import {
   settingsListItemClassName,
 } from "./settings-ui";
 
+const REGISTRATION_IDENTITIES_PAGE_SIZE = 5;
+
 function formatDate(value?: string) {
   const text = String(value || "").trim();
   if (!text) return "-";
@@ -40,6 +42,7 @@ export function RegistrationIdentitiesCard() {
   const [identityId, setIdentityId] = useState("");
   const [label, setLabel] = useState("");
   const [query, setQuery] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -74,6 +77,15 @@ export function RegistrationIdentitiesCard() {
     ].some((value) => String(value || "").toLowerCase().includes(normalized)));
   }, [items, query]);
 
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / REGISTRATION_IDENTITIES_PAGE_SIZE));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const pageStart = (safeCurrentPage - 1) * REGISTRATION_IDENTITIES_PAGE_SIZE;
+  const pagedItems = filteredItems.slice(pageStart, pageStart + REGISTRATION_IDENTITIES_PAGE_SIZE);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [query]);
+
   const handleAdd = async () => {
     const nextIdentityId = identityId.trim();
     if (!nextIdentityId) {
@@ -84,6 +96,7 @@ export function RegistrationIdentitiesCard() {
     try {
       const data = await createRegistrationIdentity({ identity_id: nextIdentityId, label: label.trim() });
       setItems(data.items || []);
+      setCurrentPage(1);
       setIdentityId("");
       setLabel("");
       toast.success("身份 ID 已添加");
@@ -128,6 +141,7 @@ export function RegistrationIdentitiesCard() {
       const document = JSON.parse(await file.text()) as unknown;
       const data = await importRegistrationIdentities(document, label.trim());
       setItems(data.items || []);
+      setCurrentPage(1);
       setImportStats(data.stats);
       toast.success(`导入完成：新增 ${data.stats.added}，跳过 ${data.stats.duplicates}`);
     } catch (error) {
@@ -227,7 +241,37 @@ export function RegistrationIdentitiesCard() {
           <SettingsEmptyState icon={ShieldCheck} title="暂无身份 ID" description="添加后，用户才能通过白名单完成本地注册。" />
         ) : (
           <div className="flex flex-col gap-3">
-            {filteredItems.map((item) => {
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <span>
+                共 {filteredItems.length} 条，显示 {pageStart + 1}-{Math.min(pageStart + pagedItems.length, filteredItems.length)} 条
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((page) => Math.max(1, page - 1))}
+                  disabled={safeCurrentPage <= 1}
+                >
+                  <ChevronLeft className="mr-1 size-4" />
+                  上一页
+                </Button>
+                <span className="min-w-14 text-center text-foreground">
+                  {safeCurrentPage}/{totalPages}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))}
+                  disabled={safeCurrentPage >= totalPages}
+                >
+                  下一页
+                  <ChevronRight className="ml-1 size-4" />
+                </Button>
+              </div>
+            </div>
+            {pagedItems.map((item) => {
               const used = Boolean(item.used);
               const enabled = Boolean(item.enabled);
               const busy = busyId === item.id;
