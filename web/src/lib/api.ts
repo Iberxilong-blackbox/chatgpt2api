@@ -1401,6 +1401,13 @@ export type RegistrationIdentity = {
   updated_at?: string;
 };
 
+export type RegistrationIdentityImportStats = {
+  input: number;
+  added: number;
+  duplicates: number;
+  existing: number;
+  invalid_rows: number;
+};
 function registrationIdentityPath(id: string) {
   return `/api/admin/registration-ids/${encodeURIComponent(id)}`;
 }
@@ -1416,6 +1423,12 @@ export async function createRegistrationIdentity(payload: { identity_id: string;
   });
 }
 
+export async function importRegistrationIdentities(document: unknown, label?: string) {
+  return httpRequest<{ stats: RegistrationIdentityImportStats; items: RegistrationIdentity[] }>("/api/admin/registration-ids/import", {
+    method: "POST",
+    body: { document, label: label ?? "" },
+  });
+}
 export async function updateRegistrationIdentity(id: string, updates: { label?: string; enabled?: boolean }) {
   return httpRequest<{ item: RegistrationIdentity; items: RegistrationIdentity[] }>(registrationIdentityPath(id), {
     method: "PATCH",

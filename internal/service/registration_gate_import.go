@@ -50,6 +50,61 @@ func MergeRegistrationIdentityIDs(raw any, identityIDs []string, label string) (
 	return map[string]any{"items": items}, stats, nil
 }
 
+func RegistrationIdentityIDsFromDocument(raw any) []string {
+	if obj, ok := raw.(map[string]any); ok {
+		for _, key := range []string{"identity_ids", "ids"} {
+			if ids := registrationIdentityIDsFromValue(obj[key]); len(ids) > 0 {
+				return ids
+			}
+		}
+		if ids := registrationIdentityIDsFromValue(obj["items"]); len(ids) > 0 {
+			return ids
+		}
+		return registrationIdentityIDsFromValue(raw)
+	}
+	return registrationIdentityIDsFromValue(raw)
+}
+
+func registrationIdentityIDsFromValue(raw any) []string {
+	switch items := raw.(type) {
+	case []string:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if value := util.Clean(item); value != "" {
+				out = append(out, value)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			switch value := item.(type) {
+			case string:
+				if text := util.Clean(value); text != "" {
+					out = append(out, text)
+				}
+			case map[string]any:
+				if text := util.Clean(value["identity_id"]); text != "" {
+					out = append(out, text)
+				}
+			}
+		}
+		return out
+	case []map[string]any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if text := util.Clean(item["identity_id"]); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case map[string]any:
+		if text := util.Clean(items["identity_id"]); text != "" {
+			return []string{text}
+		}
+	}
+	return nil
+}
 func loadRegistrationIdentityItems(raw any) []map[string]any {
 	items := util.AsMapSlice(raw)
 	if obj, ok := raw.(map[string]any); ok {

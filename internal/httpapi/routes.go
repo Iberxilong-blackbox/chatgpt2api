@@ -1780,6 +1780,37 @@ func (a *App) handleAdminRegistrationIDs(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	base := "/api/admin/registration-ids"
+	if r.URL.Path == base+"/import" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var raw any
+		if err := util.DecodeJSON(r.Body, &raw); err != nil {
+			util.WriteError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		label := ""
+		document := raw
+		if body, ok := raw.(map[string]any); ok {
+			label = util.Clean(body["label"])
+			if value, ok := body["document"]; ok {
+				document = value
+			}
+		}
+		ids := service.RegistrationIdentityIDsFromDocument(document)
+		if len(ids) == 0 {
+			util.WriteError(w, http.StatusBadRequest, "no identity IDs found")
+			return
+		}
+		stats, err := a.registerGate.ImportIdentityIDs(ids, label)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		util.WriteJSON(w, http.StatusOK, map[string]any{"stats": stats, "items": a.registerGate.List()})
+		return
+	}
 	if r.URL.Path == base {
 		switch r.Method {
 		case http.MethodGet:

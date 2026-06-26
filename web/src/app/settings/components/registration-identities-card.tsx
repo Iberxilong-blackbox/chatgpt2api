@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, LoaderCircle, Plus, ShieldCheck, Trash2, XCircle } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { CheckCircle2, LoaderCircle, Plus, ShieldCheck, Trash2, Upload, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -12,8 +12,10 @@ import {
   createRegistrationIdentity,
   deleteRegistrationIdentity,
   fetchRegistrationIdentities,
+  importRegistrationIdentities,
   updateRegistrationIdentity,
   type RegistrationIdentity,
+  type RegistrationIdentityImportStats,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +42,10 @@ export function RegistrationIdentitiesCard() {
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importStats, setImportStats] = useState<RegistrationIdentityImportStats | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const load = async (silent = false) => {
     if (!silent) setIsLoading(true);
@@ -114,6 +119,24 @@ export function RegistrationIdentitiesCard() {
     }
   };
 
+  const handleImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    setIsImporting(true);
+    try {
+      const document = JSON.parse(await file.text()) as unknown;
+      const data = await importRegistrationIdentities(document, label.trim());
+      setItems(data.items || []);
+      setImportStats(data.stats);
+      toast.success(`导入完成：新增 ${data.stats.added}，跳过 ${data.stats.duplicates}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "导入身份 ID JSON 失败");
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
   return (
     <SettingsCard
       icon={ShieldCheck}
@@ -121,16 +144,45 @@ export function RegistrationIdentitiesCard() {
       description="维护本地注册白名单，原始 ID 仅管理员可见。"
       tone="slate"
       action={
-        <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={isLoading}>
-          {isLoading ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : null}
-          刷新
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(event) => void handleImportFile(event)}
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isImporting}
+          >
+            {isImporting ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : <Upload className="mr-2 size-4" />}
+            导入 JSON
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => void load()} disabled={isLoading}>
+            {isLoading ? <LoaderCircle className="mr-2 size-4 animate-spin" /> : null}
+            刷新
+          </Button>
+        </div>
       }
     >
       <div className="flex flex-col gap-4">
         <SettingsNotice>
           用户注册时必须输入未使用的身份 ID。注册成功后 ID 会绑定用户名；即使账号被删除，也不会释放该 ID。
         </SettingsNotice>
+
+        {importStats ? (
+          <div className="grid gap-2 rounded-md border border-border/70 bg-muted/30 p-3 text-xs text-muted-foreground sm:grid-cols-5">
+            <span>输入 {importStats.input}</span>
+            <span>原有 {importStats.existing}</span>
+            <span>新增 {importStats.added}</span>
+            <span>跳过 {importStats.duplicates}</span>
+            <span>无效 {importStats.invalid_rows}</span>
+          </div>
+        ) : null}
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_auto]">
           <Field className="gap-1.5">

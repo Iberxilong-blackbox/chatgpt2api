@@ -119,6 +119,20 @@ func (s *RegistrationGateService) Delete(id string) (bool, error) {
 	return removed, nil
 }
 
+func (s *RegistrationGateService) ImportIdentityIDs(identityIDs []string, label string) (RegistrationIdentityImportStats, error) {
+	label = normalizeRegistrationIdentityLabel(label)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, stats, err := MergeRegistrationIdentityIDs(map[string]any{"items": s.items}, identityIDs, label)
+	if err != nil {
+		return stats, err
+	}
+	s.items = loadRegistrationIdentityItems(doc)
+	if err := s.saveLocked(); err != nil {
+		return stats, err
+	}
+	return stats, nil
+}
 func (s *RegistrationGateService) ValidateAvailable(identityID string) error {
 	identityID, err := normalizeRegistrationIdentityID(identityID)
 	if err != nil {
