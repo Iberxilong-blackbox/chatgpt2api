@@ -1145,6 +1145,14 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/api/accounts" && r.Method == http.MethodGet:
 		util.WriteJSON(w, http.StatusOK, map[string]any{"items": a.accountItemsForIdentity(identity)})
+	case r.URL.Path == "/api/accounts/reservoir" && r.Method == http.MethodGet:
+		util.WriteJSON(w, http.StatusOK, a.accounts.ReservoirSnapshot())
+	case r.URL.Path == "/api/accounts/reservoir/refill" && r.Method == http.MethodPost:
+		util.WriteJSON(w, http.StatusOK, a.accounts.TriggerReservoirRefill(r.Context()))
+	case r.URL.Path == "/api/accounts/reservoir/pause" && r.Method == http.MethodPost:
+		util.WriteJSON(w, http.StatusOK, a.accounts.PauseReservoirScheduler())
+	case r.URL.Path == "/api/accounts/reservoir/resume" && r.Method == http.MethodPost:
+		util.WriteJSON(w, http.StatusOK, a.accounts.ResumeReservoirScheduler())
 	case r.URL.Path == "/api/accounts/tokens" && r.Method == http.MethodGet:
 		util.WriteJSON(w, http.StatusOK, map[string]any{"tokens": a.accounts.ListTokens()})
 	case r.URL.Path == "/api/accounts/session" && r.Method == http.MethodPost:

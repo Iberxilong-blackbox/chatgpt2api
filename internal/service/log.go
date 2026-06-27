@@ -88,6 +88,13 @@ type userUsageAccumulator struct {
 	Daily     map[string]*userUsageDay
 }
 
+type RecentImageUsageStats struct {
+	Calls     int `json:"calls"`
+	Success   int `json:"success"`
+	Failure   int `json:"failure"`
+	QuotaUsed int `json:"quota_used"`
+}
+
 func NewLogService(backend ...storage.Backend) *LogService {
 	var store storage.LogBackend
 	if len(backend) > 0 {
@@ -145,6 +152,42 @@ func (s *LogService) GovernanceSummary() LogGovernanceSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.governanceSummaryLocked()
+}
+
+func (s *LogService) RecentImageUsage(window time.Duration) RecentImageUsageStats {
+	if window <= 0 {
+		window = 10 * time.Minute
+	}
+	now := time.Now()
+	start := now.Add(-window)
+	items, ok := s.loadLogItems(start.Format("2006-01-02"), now.Format("2006-01-02"))
+	if !ok {
+		return RecentImageUsageStats{}
+	}
+	stats := RecentImageUsageStats{}
+	for _, item := range items {
+		logAt, ok := parseAccountTime(item["time"])
+		if !ok || logAt.Before(start) || logAt.After(now) {
+			continue
+		}
+		if !isUsageLog(item) {
+			continue
+		}
+		detail := util.StringMap(item["detail"])
+		outcome := logOutcome(item)
+		quotaUsed := logQuotaUsed(detail, outcome)
+		if quotaUsed <= 0 && !isImageUsageEndpoint(util.Clean(detail["endpoint"])) {
+			continue
+		}
+		stats.Calls++
+		stats.QuotaUsed += quotaUsed
+		if outcome == "success" {
+			stats.Success++
+		} else if outcome == "failed" {
+			stats.Failure++
+		}
+	}
+	return stats
 }
 
 func (s *LogService) CleanupOlderThan(retentionDays int) (LogCleanupResult, error) {
@@ -692,12 +735,18 @@ func logQuotaUsed(detail map[string]any, outcome string) int {
 	if urls := util.AsStringSlice(detail["urls"]); len(urls) > 0 {
 		return len(urls)
 	}
-	endpoint := util.Clean(detail["endpoint"])
+	if isImageUsageEndpoint(util.Clean(detail["endpoint"])) {
+		return 1
+	}
+	return 0
+}
+
+func isImageUsageEndpoint(endpoint string) bool {
 	switch endpoint {
 	case "/v1/images/generations", "/v1/images/edits", "/api/creation-tasks/image-generations", "/api/creation-tasks/image-edits":
-		return 1
+		return true
 	default:
-		return 0
+		return false
 	}
 }
 

@@ -51,6 +51,10 @@ import {
   diagnoseAccount,
   type DiagnoseResult,
   fetchAccountTokens,
+  fetchAccountReservoir,
+  pauseAccountReservoir,
+  refillAccountReservoir,
+  resumeAccountReservoir,
   fetchAccounts,
   getWarmingStatus,
   refreshAccounts,
@@ -60,6 +64,7 @@ import {
   type Account,
   type AccountStatus,
   type AccountType,
+  type ReservoirSnapshot,
   type WarmingStatus,
 } from "@/lib/api";
 import { useAuthGuard } from "@/lib/use-auth-guard";
@@ -260,6 +265,48 @@ function accountSecondaryLabel(account: Account) {
   return accountTokenLabel(account);
 }
 
+const reservoirLayerLabels: Record<string, string> = {
+  available_with_quota: "有额度可用",
+  available_unknown_quota: "已验证未知额度",
+  unverified_imported: "未验证导入",
+  empty_waiting_restore: "等待恢复",
+  restore_due: "到期待刷新",
+  stale_verified: "信息过旧",
+  long_unrefreshed: "超3天未刷新",
+  zero_quota_rechecked: "连续0额度",
+  refreshing: "刷新中",
+  invalid_or_disabled: "异常/禁用",
+};
+
+function formatReservoirTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const minutes = Math.max(1, Math.ceil((date.getTime() - Date.now()) / 60000));
+  if (minutes < 60) return `${minutes} 分钟后`;
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} 小时后`;
+}
+
+function formatForecastHour(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const hours = String(date.getHours()).padStart(2, "0");
+  return `${hours}:00`;
+}
+
+function reservoirRiskLabel(value?: string) {
+  if (value === "danger") return "危险";
+  if (value === "warning") return "偏低";
+  return "正常";
+}
+
+function reservoirRiskClassName(value?: string) {
+  if (value === "danger") return "border-red-200 bg-red-50 text-red-700";
+  if (value === "warning") return "border-amber-200 bg-amber-50 text-amber-700";
+  return "border-emerald-200 bg-emerald-50 text-emerald-700";
+}
+
 function downloadTokenFile(tokens: string[]) {
   const content = `${tokens.join("\n")}\n`;
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -331,6 +378,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(null);
   const [diagnoseAccountId, setDiagnoseAccountId] = useState<string | null>(null);
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<string[]>([]);
+  const [reservoirSnapshot, setReservoirSnapshot] = useState<ReservoirSnapshot | null>(null);
+  const [isReservoirLoading, setIsReservoirLoading] = useState(false);
+  const [isReservoirActionRunning, setIsReservoirActionRunning] = useState(false);
 
   const canImportTokenAccounts = hasAPIPermission(session, "POST", "/api/accounts");
   const canImportSessionAccounts = hasAPIPermission(session, "POST", "/api/accounts/session");
@@ -339,6 +389,10 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const canUpdateAccount = hasAPIPermission(session, "POST", "/api/accounts/update");
   const canDeleteAccounts = hasAPIPermission(session, "DELETE", "/api/accounts");
   const canExportTokens = hasAPIPermission(session, "GET", "/api/accounts/tokens");
+  const canViewReservoir = hasAPIPermission(session, "GET", "/api/accounts/reservoir");
+  const canRefillReservoir = hasAPIPermission(session, "POST", "/api/accounts/reservoir/refill");
+  const canPauseReservoir = hasAPIPermission(session, "POST", "/api/accounts/reservoir/pause");
+  const canResumeReservoir = hasAPIPermission(session, "POST", "/api/accounts/reservoir/resume");
   const canViewWarmingStatus = hasAPIPermission(session, "GET", "/api/accounts/warming/status");
   const canStartWarming = hasAPIPermission(session, "POST", "/api/accounts/warming/start");
   const canStopWarming = hasAPIPermission(session, "POST", "/api/accounts/warming/stop");
@@ -367,6 +421,27 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     }
   }, [applyAccountItems]);
 
+  const loadReservoir = useCallback(async (silent = false) => {
+    if (!canViewReservoir) {
+      return;
+    }
+    if (!silent) {
+      setIsReservoirLoading(true);
+    }
+    try {
+      const snapshot = await fetchAccountReservoir();
+      setReservoirSnapshot(snapshot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "加载蓄水池状态失败";
+      if (!silent) {
+        toast.error(message);
+      }
+    } finally {
+      if (!silent) {
+        setIsReservoirLoading(false);
+      }
+    }
+  }, [canViewReservoir]);
   const loadWarmingStatus = useCallback(async (silent = false) => {
     if (!canViewWarmingStatus) {
       return;
@@ -407,6 +482,19 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     void loadAccounts();
   }, [loadAccounts]);
 
+  useEffect(() => {
+    void loadReservoir(true);
+  }, [loadReservoir]);
+
+  useEffect(() => {
+    if (!canViewReservoir) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadReservoir(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [canViewReservoir, loadReservoir]);
   useEffect(() => {
     void loadWarmingStatus(true);
   }, [loadWarmingStatus]);
@@ -469,6 +557,24 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
 
   const refreshingAccountIdSet = useMemo(() => new Set(refreshingAccountIds), [refreshingAccountIds]);
 
+  const reservoirForecastPoints = useMemo(() => {
+    const points = reservoirSnapshot?.forecast ?? [];
+    return points.filter((_, index) => index < 6 || (index + 1) % 4 === 0).slice(0, 10);
+  }, [reservoirSnapshot?.forecast]);
+
+  const reservoirForecastMinWater = useMemo(() => {
+    const points = reservoirSnapshot?.forecast ?? [];
+    if (points.length === 0) return null;
+    return Math.min(...points.map((point) => point.estimatedWater));
+  }, [reservoirSnapshot?.forecast]);
+
+  const reservoirForecastRisk = useMemo(() => {
+    const points = reservoirSnapshot?.forecast ?? [];
+    if (points.some((point) => point.riskLevel === "danger")) return "danger";
+    if (points.some((point) => point.riskLevel === "warning")) return "warning";
+    return points.length > 0 ? "normal" : null;
+  }, [reservoirSnapshot?.forecast]);
+
   const paginationItems = useMemo(() => {
     const items: (number | "...")[] = [];
     const start = Math.max(1, safePage - 1);
@@ -506,6 +612,47 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     }
   };
 
+  const handleReservoirRefill = async () => {
+    if (!canRefillReservoir) {
+      toast.error("没有触发补水权限");
+      return;
+    }
+    setIsReservoirActionRunning(true);
+    try {
+      const snapshot = await refillAccountReservoir();
+      setReservoirSnapshot(snapshot);
+      void loadAccounts(true);
+      toast.success("已触发蓄水池补水");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "触发补水失败";
+      toast.error(message);
+    } finally {
+      setIsReservoirActionRunning(false);
+    }
+  };
+
+  const handleReservoirPauseToggle = async () => {
+    const paused = reservoirSnapshot?.paused ?? false;
+    if (paused && !canResumeReservoir) {
+      toast.error("没有恢复调度权限");
+      return;
+    }
+    if (!paused && !canPauseReservoir) {
+      toast.error("没有暂停调度权限");
+      return;
+    }
+    setIsReservoirActionRunning(true);
+    try {
+      const snapshot = paused ? await resumeAccountReservoir() : await pauseAccountReservoir();
+      setReservoirSnapshot(snapshot);
+      toast.success(paused ? "已恢复蓄水池调度" : "已暂停蓄水池调度");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新调度状态失败";
+      toast.error(message);
+    } finally {
+      setIsReservoirActionRunning(false);
+    }
+  };
   const handleRefreshAccounts = async (accountIds: string[]) => {
     if (!canRefreshAccounts) {
       toast.error("没有刷新账号权限");
@@ -861,15 +1008,15 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
               <RefreshCw className={cn("size-4", isLoading ? "animate-spin" : "")} />
               刷新
             </Button>
-            {canRefreshAccounts ? (
+            {canRefillReservoir ? (
               <Button
                 variant="outline"
                 className="h-10 rounded-lg"
-                onClick={() => void handleRefreshAccounts(accounts.map((item) => item.id))}
-                disabled={isLoading || isRefreshing || isDeleting || accounts.length === 0}
+                onClick={() => void handleReservoirRefill()}
+                disabled={isLoading || isReservoirActionRunning || isDeleting || accounts.length === 0}
               >
-                <RefreshCw className={cn("size-4", isRefreshing ? "animate-spin" : "")} />
-                一键刷新额度
+                <RefreshCw className={cn("size-4", isReservoirActionRunning ? "animate-spin" : "")} />
+                立即补水
               </Button>
             ) : null}
             {canImportAccounts ? (
@@ -1116,6 +1263,123 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
         </div>
       </section>
 
+      {canViewReservoir ? (
+        <section className="mt-4">
+          <Card className="overflow-hidden rounded-[18px] bg-white/92 shadow-[0_8px_24px_rgba(24,40,72,0.06)]">
+            <CardContent className="flex flex-col gap-4 p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex size-10 shrink-0 items-center justify-center rounded-[12px] bg-sky-50 text-sky-700 ring-1 ring-sky-100">
+                    <RefreshCw className="size-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-semibold text-foreground">蓄水池状态</h3>
+                      <Badge variant={reservoirSnapshot?.paused ? "warning" : "secondary"} className="rounded-md px-2 py-1">
+                        {reservoirSnapshot?.paused ? "已暂停" : reservoirSnapshot?.mode === "demand_refresh" ? "补水中" : "维护中"}
+                      </Badge>
+                      {(reservoirSnapshot?.refreshing ?? 0) > 0 ? (
+                        <Badge variant="info" className="rounded-md px-2 py-1">刷新中</Badge>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                      <span>水位 {formatCompact(reservoirSnapshot?.currentWater ?? 0)} / {formatCompact(reservoirSnapshot?.targetWater ?? 0)}</span>
+                      <span>队列 {formatCompact(reservoirSnapshot?.queueSize ?? 0)}</span>
+                      <span>10分钟出水 {formatCompact(reservoirSnapshot?.recentOutflow10m ?? 0)}</span>
+                      <span>耗尽 {formatReservoirTime(reservoirSnapshot?.estimatedDepletionAt ?? null)}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {canRefillReservoir ? (
+                    <Button
+                      type="button"
+                      className="h-9 rounded-lg bg-stone-950 px-3 text-white hover:bg-stone-800"
+                      onClick={() => void handleReservoirRefill()}
+                      disabled={isReservoirActionRunning || isReservoirLoading}
+                    >
+                      {isReservoirActionRunning ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                      立即补水
+                    </Button>
+                  ) : null}
+                  {canPauseReservoir || canResumeReservoir ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-9 rounded-lg border-stone-200 bg-white px-3"
+                      onClick={() => void handleReservoirPauseToggle()}
+                      disabled={isReservoirActionRunning || isReservoirLoading}
+                    >
+                      {reservoirSnapshot?.paused ? <Play className="size-4" /> : <Square className="size-4" />}
+                      {reservoirSnapshot?.paused ? "恢复调度" : "暂停调度"}
+                    </Button>
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-9 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                    onClick={() => void loadReservoir()}
+                    disabled={isReservoirLoading}
+                  >
+                    <RefreshCw className={cn("size-4", isReservoirLoading ? "animate-spin" : "")} />
+                    刷新状态
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                {Object.entries(reservoirSnapshot?.candidateCounts ?? {}).map(([layer, count]) => (
+                  <div key={layer} className="flex items-center justify-between rounded-lg bg-stone-50 px-3 py-2 text-xs">
+                    <span className="truncate text-stone-500">{reservoirLayerLabels[layer] ?? layer}</span>
+                    <span className="font-semibold text-stone-900">{formatCompact(count)}</span>
+                  </div>
+                ))}
+              </div>
+              {reservoirForecastPoints.length > 0 ? (
+                <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-xs font-semibold text-stone-900">未来24小时预测</div>
+                      <div className="mt-1 text-xs text-stone-500">
+                        最低预测水位 {formatCompact(reservoirForecastMinWater ?? 0)}，状态 {reservoirRiskLabel(reservoirForecastRisk ?? undefined)}
+                      </div>
+                    </div>
+                    <Badge className={cn("w-fit rounded-md border px-2 py-1", reservoirRiskClassName(reservoirForecastRisk ?? undefined))}>
+                      预测值
+                    </Badge>
+                  </div>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                    {reservoirForecastPoints.map((point) => (
+                      <div key={point.at} className="rounded-lg bg-white px-3 py-2 text-xs shadow-[0_1px_0_rgba(15,23,42,0.04)]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium text-stone-700">{formatForecastHour(point.at)}</span>
+                          <span className={cn("rounded px-1.5 py-0.5", reservoirRiskClassName(point.riskLevel))}>
+                            {reservoirRiskLabel(point.riskLevel)}
+                          </span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between text-stone-500">
+                          <span>水位</span>
+                          <span className="font-semibold text-stone-900">{formatCompact(point.estimatedWater)}</span>
+                        </div>
+                        <div className="mt-1 flex items-center justify-between text-stone-500">
+                          <span>回流/出水</span>
+                          <span>{formatCompact(point.estimatedInflow)} / {formatCompact(point.estimatedOutflow)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {(reservoirSnapshot?.risks?.length ?? 0) > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {reservoirSnapshot?.risks.map((risk) => (
+                    <Badge key={risk} variant="warning" className="rounded-md px-2 py-1">{risk}</Badge>
+                  ))}
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+        </section>
+      ) : null}
       {canViewWarmingStatus ? (
         <section className="mt-4">
           <Card className="overflow-hidden rounded-[18px] bg-white/92 shadow-[0_8px_24px_rgba(24,40,72,0.06)]">
@@ -1629,3 +1893,4 @@ export default function AccountsPage() {
 
   return <AccountsPageContent session={session} />;
 }
+

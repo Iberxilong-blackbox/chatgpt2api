@@ -46,22 +46,30 @@ type DailyAccountRefreshConfig interface {
 }
 
 type AccountService struct {
-	mu                 sync.Mutex
-	storage            storage.Backend
-	config             AccountConfig
-	proxy              *ProxyService
-	logs               *LogService
-	index              int
-	items              []map[string]any
-	imageReservations  map[string]int
-	remoteBaseURL      string
-	browserHTTPClient  func(profile string, timeout time.Duration) *http.Client
-	textRequestCount   map[string]int
-	textCooldownUntil  time.Time
-	refresher          *SessionRefresher
-	warmingWorker      WarmingRunner
-	importDir          string
-	lastRefreshAttempt map[string]time.Time
+	mu                       sync.Mutex
+	storage                  storage.Backend
+	config                   AccountConfig
+	proxy                    *ProxyService
+	logs                     *LogService
+	index                    int
+	items                    []map[string]any
+	imageReservations        map[string]int
+	remoteBaseURL            string
+	browserHTTPClient        func(profile string, timeout time.Duration) *http.Client
+	textRequestCount         map[string]int
+	textCooldownUntil        time.Time
+	refresher                *SessionRefresher
+	warmingWorker            WarmingRunner
+	importDir                string
+	lastRefreshAttempt       map[string]time.Time
+	reservoirMu              sync.Mutex
+	reservoirRunning         bool
+	reservoirPaused          bool
+	reservoirRefreshing      int
+	reservoirLastRunAt       *time.Time
+	reservoirLastRefillAt    *time.Time
+	reservoirLastMaintenance *time.Time
+	reservoirLastResult      map[string]any
 }
 
 const (
@@ -247,6 +255,9 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 			order = append(order, token)
 		}
 		updates := map[string]any{"access_token": token, "type": util.ValueOr(current["type"], "Free")}
+		if !ok && current["imported_at"] == nil {
+			updates["imported_at"] = util.NowISO()
+		}
 		if accountType := importedAccountType(record); accountType != "" {
 			updates["type"] = accountType
 		}
@@ -347,12 +358,27 @@ func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]a
 		return nil, fmt.Errorf("session JSON missing sessionToken")
 	}
 
-	sessionExpires := any(session.Expires)
-	userID := util.Clean(session.User.ID)
-	email := util.Clean(session.User.Email)
+	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	defer cancel()
+	validated, err := s.refresher.RefreshSession(ctx, accessToken, sessionToken)
+	if err != nil {
+		return nil, fmt.Errorf("session token validation failed: %w", err)
+	}
+	accessToken = util.Clean(validated.AccessToken)
+	if accessToken == "" {
+		return nil, fmt.Errorf("session token validation failed: missing access token")
+	}
+	sessionToken = util.Clean(validated.SessionToken)
+	if sessionToken == "" {
+		sessionToken = util.Clean(session.SessionToken)
+	}
+	sessionExpires := any(firstNonEmpty(util.Clean(validated.Expires), util.Clean(session.Expires)))
+	userID := util.Clean(validated.User.ID)
+	email := util.Clean(validated.User.Email)
 	updates := map[string]any{
-		"session_token":   sessionToken,
-		"session_expires": sessionExpires,
+		"session_token":      sessionToken,
+		"session_expires":    sessionExpires,
+		"token_refreshed_at": util.NowISO(),
 	}
 	if userID != "" {
 		updates["user_id"] = userID
@@ -360,7 +386,7 @@ func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]a
 	if email != "" {
 		updates["email"] = email
 	}
-	if name := util.Clean(session.User.Name); name != "" {
+	if name := util.Clean(validated.User.Name); name != "" {
 		updates["name"] = name
 	}
 	if record != nil {
@@ -482,7 +508,18 @@ func (s *AccountService) UpdateAccount(accessToken string, updates map[string]an
 	if idx < 0 {
 		return nil
 	}
-	account := normalizeAccount(mergeMaps(s.items[idx], updates, map[string]any{"access_token": accessToken}))
+	if _, ok := updates["quota"]; ok && updates["quota_checked_at"] == nil {
+		updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+	}
+	if _, ok := updates["image_quota_unknown"]; ok && updates["quota_checked_at"] == nil {
+		updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+	}
+	merged := mergeMaps(s.items[idx], updates, map[string]any{"access_token": accessToken})
+	if delta := util.ToInt(merged["zero_quota_refresh_count_delta"], 0); delta != 0 {
+		merged["zero_quota_refresh_count"] = util.ToInt(s.items[idx]["zero_quota_refresh_count"], 0) + delta
+		delete(merged, "zero_quota_refresh_count_delta")
+	}
+	account := normalizeAccount(merged)
 	if account == nil {
 		return nil
 	}
@@ -727,6 +764,9 @@ func (s *AccountService) filterNonFreeLocked() []map[string]any {
 		if isWarmingAccount(item) {
 			continue
 		}
+		if !isReservoirTextCandidate(item) {
+			continue
+		}
 		if IsPaidImageAccount(item) {
 			out = append(out, item)
 		}
@@ -742,6 +782,9 @@ func (s *AccountService) filterFreeLocked() []map[string]any {
 			continue
 		}
 		if isWarmingAccount(item) {
+			continue
+		}
+		if !isReservoirTextCandidate(item) {
 			continue
 		}
 		if !IsPaidImageAccount(item) {
@@ -881,12 +924,26 @@ func (s *AccountService) RefreshAccountState(ctx context.Context, accessToken st
 		}
 		return nil, err
 	}
-	return s.UpdateAccount(accessToken, remote), nil
+	return s.UpdateAccount(accessToken, accountRefreshSuccessUpdates(remote)), nil
 }
 
 type pendingRefreshItem struct {
 	accessToken  string
 	sessionToken string
+}
+
+func accountRefreshSuccessUpdates(remote map[string]any) map[string]any {
+	updates := util.CopyMap(remote)
+	now := util.NowISO()
+	updates["quota_checked_at"] = now
+	quota := util.ToInt(updates["quota"], 0)
+	if quota > 0 {
+		updates["last_nonzero_quota"] = quota
+		updates["zero_quota_refresh_count"] = 0
+	} else if !util.ToBool(updates["image_quota_unknown"]) {
+		updates["zero_quota_refresh_count_delta"] = 1
+	}
+	return updates
 }
 
 func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []string) map[string]any {
@@ -959,7 +1016,7 @@ func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []str
 		}
 		detailsByToken[token] = detail
 		if res.err == nil {
-			updated := s.UpdateAccount(res.token, res.info)
+			updated := s.UpdateAccount(res.token, accountRefreshSuccessUpdates(res.info))
 			if updated != nil {
 				refreshed++
 				detail["account_status"] = updated["status"]
@@ -1053,7 +1110,7 @@ func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []str
 			continue
 		}
 		if info, err := s.FetchRemoteInfo(ctx, newAccessToken); err == nil {
-			s.UpdateAccount(newAccessToken, info)
+			s.UpdateAccount(newAccessToken, accountRefreshSuccessUpdates(info))
 		}
 		if detail != nil {
 			detail["access_token"] = newAccessToken
@@ -1104,6 +1161,11 @@ func (s *AccountService) MarkImageResult(accessToken string, success bool) map[s
 	unknown := util.ToBool(next["image_quota_unknown"])
 	if success {
 		next["success"] = util.ToInt(next["success"], 0) + 1
+		next["last_success_at"] = util.NowISO()
+		next["zero_quota_refresh_count"] = 0
+		if quota := util.ToInt(next["quota"], 0); quota > 0 {
+			next["last_nonzero_quota"] = quota
+		}
 		if !unknown {
 			quota := util.ToInt(next["quota"], 0) - 1
 			if quota < 0 {
@@ -1231,10 +1293,11 @@ func (s *AccountService) RefreshAccountViaSession(accessToken, newAccessToken, n
 	}
 
 	account := normalizeAccount(mergeMaps(s.items[idx], map[string]any{
-		"access_token":    newAccessToken,
-		"session_token":   newSessionToken,
-		"session_expires": newExpires,
-		"status":          "正常",
+		"access_token":       newAccessToken,
+		"session_token":      newSessionToken,
+		"session_expires":    newExpires,
+		"status":             "正常",
+		"token_refreshed_at": util.NowISO(),
 	}))
 	if account == nil {
 		return false
@@ -1799,6 +1862,9 @@ func IsImageAccountAvailable(account map[string]any) bool {
 	if status == "禁用" || status == "限流" || status == "异常" || status == "刷新中" || status == "过期待刷新" {
 		return false
 	}
+	if !isReservoirImageCandidate(account) {
+		return false
+	}
 	if util.ToBool(account["image_quota_unknown"]) {
 		return true
 	}
@@ -1908,8 +1974,18 @@ func normalizeAccount(item map[string]any) map[string]any {
 	} else {
 		normalized["restore_at"] = nil
 	}
+	delete(normalized, "zero_quota_refresh_count_delta")
 	normalized["success"] = util.ToInt(normalized["success"], 0)
 	normalized["fail"] = util.ToInt(normalized["fail"], 0)
+	normalized["last_nonzero_quota"] = util.ToInt(normalized["last_nonzero_quota"], 0)
+	normalized["zero_quota_refresh_count"] = util.ToInt(normalized["zero_quota_refresh_count"], 0)
+	for _, key := range []string{"quota_checked_at", "token_refreshed_at", "last_success_at", "imported_at", "refresh_cooldown_until"} {
+		if value := util.Clean(normalized[key]); value != "" {
+			normalized[key] = value
+		} else {
+			normalized[key] = nil
+		}
+	}
 	normalized["warming_day"] = util.ToInt(normalized["warming_day"], 0)
 	if warming := util.Clean(normalized["warming_status"]); warming == "warming" || warming == "done" {
 		normalized["warming_status"] = warming
@@ -1928,26 +2004,34 @@ func publicAccounts(accounts []map[string]any) []map[string]any {
 			continue
 		}
 		out = append(out, map[string]any{
-			"id":                  accountIDFromToken(token),
-			"token_preview":       util.AnonymizeToken(token),
-			"access_token":        token,
-			"type":                util.ValueOr(account["type"], "Free"),
-			"status":              util.ValueOr(account["status"], "正常"),
-			"quota":               util.ValueOr(account["quota"], 0),
-			"imageQuotaUnknown":   util.ToBool(account["image_quota_unknown"]),
-			"email":               account["email"],
-			"user_id":             account["user_id"],
-			"chatgpt_account_id":  account["chatgpt_account_id"],
-			"limits_progress":     util.ValueOr(account["limits_progress"], []any{}),
-			"default_model_slug":  account["default_model_slug"],
-			"restoreAt":           account["restore_at"],
-			"success":             util.ToInt(account["success"], 0),
-			"fail":                util.ToInt(account["fail"], 0),
-			"lastUsedAt":          account["last_used_at"],
-			"warmingStatus":       util.ValueOr(account["warming_status"], nil),
-			"warmingDay":          util.ToInt(account["warming_day"], 0),
-			"warmingErrors":       util.ToInt(account["warming_errors"], 0),
-			"warmingLastActionAt": account["warming_last_action_at"],
+			"id":                    accountIDFromToken(token),
+			"token_preview":         util.AnonymizeToken(token),
+			"access_token":          token,
+			"type":                  util.ValueOr(account["type"], "Free"),
+			"status":                util.ValueOr(account["status"], "正常"),
+			"quota":                 util.ValueOr(account["quota"], 0),
+			"imageQuotaUnknown":     util.ToBool(account["image_quota_unknown"]),
+			"email":                 account["email"],
+			"user_id":               account["user_id"],
+			"chatgpt_account_id":    account["chatgpt_account_id"],
+			"limits_progress":       util.ValueOr(account["limits_progress"], []any{}),
+			"default_model_slug":    account["default_model_slug"],
+			"restoreAt":             account["restore_at"],
+			"success":               util.ToInt(account["success"], 0),
+			"fail":                  util.ToInt(account["fail"], 0),
+			"lastUsedAt":            account["last_used_at"],
+			"quotaCheckedAt":        account["quota_checked_at"],
+			"tokenRefreshedAt":      account["token_refreshed_at"],
+			"lastSuccessAt":         account["last_success_at"],
+			"lastNonzeroQuota":      util.ToInt(account["last_nonzero_quota"], 0),
+			"importedAt":            account["imported_at"],
+			"refreshCooldownUntil":  account["refresh_cooldown_until"],
+			"zeroQuotaRefreshCount": util.ToInt(account["zero_quota_refresh_count"], 0),
+			"reservoirLayer":        classifyReservoirAccount(account, time.Now(), DefaultReservoirPolicy()),
+			"warmingStatus":         util.ValueOr(account["warming_status"], nil),
+			"warmingDay":            util.ToInt(account["warming_day"], 0),
+			"warmingErrors":         util.ToInt(account["warming_errors"], 0),
+			"warmingLastActionAt":   account["warming_last_action_at"],
 		})
 	}
 	return out

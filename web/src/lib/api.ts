@@ -141,6 +141,39 @@ export type ApiPermission = {
   subtree?: boolean;
 };
 
+export type ReservoirForecastPoint = {
+  at: string;
+  estimatedWater: number;
+  estimatedInflow: number;
+  estimatedOutflow: number;
+  restoreDueAccounts: number;
+  riskLevel: "normal" | "warning" | "danger" | string;
+};
+
+export type ReservoirSnapshot = {
+  enabled: boolean;
+  mode: string;
+  paused: boolean;
+  running: boolean;
+  currentWater: number;
+  fixedMinWater: number;
+  targetWater: number;
+  recentOutflow10m: number;
+  recentCalls10m: number;
+  recentSuccess10m: number;
+  recentFailure10m: number;
+  estimatedDepletionAt?: string | null;
+  candidateCounts: Record<string, number>;
+  refreshing: number;
+  queueSize: number;
+  lastRunAt?: string | null;
+  lastRefillAt?: string | null;
+  lastResult?: Record<string, unknown>;
+  forecast: ReservoirForecastPoint[];
+  risks: string[];
+  updatedAt: string;
+};
+
 export type Account = {
   id: string;
   access_token?: string;
@@ -161,6 +194,14 @@ export type Account = {
   success: number;
   fail: number;
   lastUsedAt: string | null;
+  quotaCheckedAt?: string | null;
+  tokenRefreshedAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastNonzeroQuota?: number;
+  importedAt?: string | null;
+  refreshCooldownUntil?: string | null;
+  zeroQuotaRefreshCount?: number;
+  reservoirLayer?: string;
   warmingStatus?: string | null;
   warmingDay?: number;
   warmingErrors?: number;
@@ -833,6 +874,22 @@ export async function fetchAccounts() {
 
 export async function fetchAccountTokens() {
   return httpRequest<AccountTokensResponse>("/api/accounts/tokens");
+}
+
+export async function fetchAccountReservoir() {
+  return httpRequest<ReservoirSnapshot>("/api/accounts/reservoir");
+}
+
+export async function refillAccountReservoir() {
+  return httpRequest<ReservoirSnapshot>("/api/accounts/reservoir/refill", { method: "POST" });
+}
+
+export async function pauseAccountReservoir() {
+  return httpRequest<ReservoirSnapshot>("/api/accounts/reservoir/pause", { method: "POST" });
+}
+
+export async function resumeAccountReservoir() {
+  return httpRequest<ReservoirSnapshot>("/api/accounts/reservoir/resume", { method: "POST" });
 }
 
 export async function createAccounts(tokens: string[]) {

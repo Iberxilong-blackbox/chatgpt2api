@@ -148,6 +148,7 @@ func NewApp() (*App, error) {
 	})
 	accounts.StartLimitedWatcher(ctx, time.Duration(cfg.RefreshAccountIntervalMinute())*time.Minute)
 	accounts.StartDailyRefreshWatcher(ctx, cfg)
+	accounts.StartReservoirScheduler(ctx)
 	logs.StartRetentionCleaner(ctx, cfg.LogRetentionDays, 24*time.Hour, logger)
 	_, _ = app.images.CleanupStorage(service.ImageStorageCleanupOptions{
 		RetentionDays: cfg.ImageRetentionDays(),

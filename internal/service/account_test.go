@@ -806,7 +806,7 @@ func TestGetAvailableAccessTokenUsesCachedAccountOnConnectionRefreshFailure(t *t
 func TestGetTextAccessTokenEnforcesFreeCooldown(t *testing.T) {
 	accounts := newTestAccountService(t)
 	accounts.AddAccounts([]string{"free-token"})
-	accounts.UpdateAccount("free-token", map[string]any{"status": "正常", "type": "Free"})
+	accounts.UpdateAccount("free-token", map[string]any{"status": "正常", "type": "Free", "quota": 1})
 
 	for i := 0; i < 10; i++ {
 		if token := accounts.GetTextAccessToken(); token != "free-token" {
@@ -829,7 +829,7 @@ func TestGetTextAccessTokenEnforcesFreeCooldown(t *testing.T) {
 func TestGetTextAccessTokenKeepsPaidAccountsAvailableAfterSoftLimit(t *testing.T) {
 	accounts := newTestAccountService(t)
 	accounts.AddAccounts([]string{"plus-token"})
-	accounts.UpdateAccount("plus-token", map[string]any{"status": "正常", "type": "Plus"})
+	accounts.UpdateAccount("plus-token", map[string]any{"status": "正常", "type": "Plus", "quota": 1})
 
 	for i := 0; i < 12; i++ {
 		if token := accounts.GetTextAccessToken(); token != "plus-token" {
@@ -865,7 +865,7 @@ func TestApplyAccountErrorMessageDetectsImageStreamFailures(t *testing.T) {
 	accounts.UpdateAccount("token-invalid", map[string]any{"status": "正常", "quota": 5})
 	accounts.UpdateAccount("token-limited", map[string]any{"status": "正常", "quota": 5, "image_quota_unknown": true})
 
-	message, handled := accounts.ApplyAccountErrorMessage("token-invalid", "image_stream", "auth_chat_requirements failed: status=401, body={\"detail\":\"token_invalidated\"}")
+	message, handled := accounts.ApplyAccountErrorMessage("token-invalid", "image_stream", "auth_chat_requirements failed: status=401, body={\"detail\":\"token_revoked\"}")
 	if !handled || message != "检测到封号" {
 		t.Fatalf("invalid handled = %v message = %q, want 检测到封号", handled, message)
 	}

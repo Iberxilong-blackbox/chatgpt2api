@@ -61,6 +61,10 @@ var apiPermissionCatalog = []APIPermission{
 	apiPermission("DELETE", "/api/auth/users", "删除个人 API 令牌", "用户令牌", true),
 
 	apiPermission("GET", "/api/accounts", "查看号池", "号池管理", false),
+	apiPermission("GET", "/api/accounts/reservoir", "查看号池蓄水池", "号池管理", false),
+	apiPermission("POST", "/api/accounts/reservoir/refill", "触发号池补水", "号池管理", false),
+	apiPermission("POST", "/api/accounts/reservoir/pause", "暂停号池调度", "号池管理", false),
+	apiPermission("POST", "/api/accounts/reservoir/resume", "恢复号池调度", "号池管理", false),
 	apiPermission("GET", "/api/accounts/tokens", "导出号池 Token", "号池管理", false),
 	apiPermission("POST", "/api/accounts", "导入号池 Token", "号池管理", false),
 	apiPermission("POST", "/api/accounts/session", "通过 Session 导入号池账号", "号池管理", false),
