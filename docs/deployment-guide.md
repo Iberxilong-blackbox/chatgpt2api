@@ -187,6 +187,8 @@ cd .. && go build -o chatgpt2api.exe ./internal
 # 3.1本地
 ./chatgpt2api.exe
 
+cd web && bun install && bun run build && cd .. && go build -o chatgpt2api.exe ./internal && ./chatgpt2api.exe
+
 # 3.2 服务器见 #### 4. 更新部署
 ```
 

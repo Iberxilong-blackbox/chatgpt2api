@@ -67,15 +67,15 @@ export function AnimatedRoutes() {
 
   return (
     <AnimatePresence mode="wait" initial={false}>
-      <motion.div
-        key={location.pathname}
-        variants={prefersReducedMotion ? reducedRouteVariants : routeVariants}
-        initial="initial"
-        animate="animate"
-        exit="exit"
-        transition={prefersReducedMotion ? reducedRouteTransition : routeTransition}
-        className="min-w-0"
-      >
+        <motion.div
+          key={location.pathname}
+          variants={prefersReducedMotion ? reducedRouteVariants : routeVariants}
+          initial="initial"
+          animate="animate"
+          exit="exit"
+          transition={prefersReducedMotion ? reducedRouteTransition : routeTransition}
+          className="h-full min-w-0"
+        >
         <Routes location={location}>
           {appRoutes.map((route) => (
             <Route

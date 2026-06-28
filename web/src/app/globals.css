@@ -141,6 +141,12 @@
     scrollbar-gutter: stable;
     overflow-y: scroll;
   }
+  html.retouch-fullscreen,
+  body.retouch-fullscreen {
+    overflow: hidden;
+    overscroll-behavior: none;
+    scrollbar-gutter: auto;
+  }
   body {
     @apply bg-background font-sans text-foreground antialiased;
     background-image: linear-gradient(180deg, #f8fbff 0%, var(--background) 42%, #f2f6fb 100%);

@@ -32,7 +32,15 @@ type RetouchCanvasProps = {
   brushSize: number;
   className?: string;
   onMarkerChange?: (color: RetouchMarkerColor, hasMarks: boolean) => void;
+  onBrushSizeChange?: (size: number) => void;
 };
+
+const BRUSH_PRESETS = [
+  { size: 2, label: "S" },
+  { size: 5, label: "M" },
+  { size: 8, label: "L" },
+  { size: 10, label: "XL" },
+] as const;
 
 const MARKER_COLORS: MarkerCandidate[] = [
   { id: "red", name: "红色", css: "#ff1f1f", rgb: [255, 31, 31] },
@@ -151,7 +159,7 @@ function canvasToFile(canvas: HTMLCanvasElement, fileName: string) {
 }
 
 export const RetouchCanvas = forwardRef<RetouchCanvasHandle, RetouchCanvasProps>(function RetouchCanvas(
-  { imageFile, imageUrl, brushSize, className, onMarkerChange },
+  { imageFile, imageUrl, brushSize, className, onMarkerChange, onBrushSizeChange },
   ref,
 ) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -319,14 +327,14 @@ export const RetouchCanvas = forwardRef<RetouchCanvasHandle, RetouchCanvasProps>
   };
 
   return (
-    <div className={cn("grid gap-3", className)}>
-      <div className="relative overflow-hidden rounded-[8px] border border-slate-200 bg-[linear-gradient(45deg,#f8fafc_25%,transparent_25%),linear-gradient(-45deg,#f8fafc_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f8fafc_75%),linear-gradient(-45deg,transparent_75%,#f8fafc_75%)] bg-[length:24px_24px] bg-[position:0_0,0_12px,12px_-12px,-12px_0] shadow-sm">
+    <div className={cn("flex min-h-0 flex-1 flex-col gap-3", className)}>
+      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-[8px] border border-slate-200 bg-[linear-gradient(45deg,#f8fafc_25%,transparent_25%),linear-gradient(-45deg,#f8fafc_25%,transparent_25%),linear-gradient(45deg,transparent_75%,#f8fafc_75%),linear-gradient(-45deg,transparent_75%,#f8fafc_75%)] bg-[length:24px_24px] bg-[position:0_0,0_12px,12px_-12px,-12px_0] shadow-sm">
         <canvas
           ref={canvasRef}
           width={imageSize.width || 1}
           height={imageSize.height || 1}
           style={viewBox}
-          className="block h-auto max-h-[68vh] w-full touch-none cursor-crosshair object-contain"
+          className="block h-auto w-auto max-h-full max-w-full touch-none cursor-crosshair object-contain"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={finishStroke}
@@ -334,15 +342,42 @@ export const RetouchCanvas = forwardRef<RetouchCanvasHandle, RetouchCanvasProps>
         />
         {!imageSize.width ? (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-500">正在读取图片</div>
+        ) : !hasMarks ? (
+          <div className="pointer-events-none absolute inset-0 flex select-none items-center justify-center">
+            <span className="rounded-full bg-slate-950/80 px-5 py-2.5 text-sm font-medium tracking-wide text-white/85 shadow-sm backdrop-blur-sm">
+              框选或圈出需要修改的区域
+            </span>
+          </div>
         ) : null}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-[8px] border border-slate-200 bg-white px-3 py-2 shadow-sm">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[8px] border border-slate-200 bg-white px-3 py-2 shadow-sm">
         <div className="flex items-center gap-2 text-sm text-slate-600">
           <span className="size-4 rounded-full ring-2 ring-white shadow" style={{ backgroundColor: markerColor.css }} />
           <span>当前标注：{markerColor.name}</span>
           <span className="text-slate-400">{hasMarks ? `${strokes.length} 笔` : "未标注"}</span>
         </div>
+
+        <div className="flex items-center gap-1.5">
+          {BRUSH_PRESETS.map((preset) => (
+            <button
+              key={preset.size}
+              type="button"
+              onClick={() => onBrushSizeChange?.(preset.size)}
+              className={[
+                "flex size-9 items-center justify-center rounded-full text-xs font-medium transition",
+                "hover:bg-slate-100",
+                brushSize === preset.size
+                  ? "bg-slate-950 text-white shadow-sm hover:bg-slate-800"
+                  : "text-slate-500",
+              ].join(" ")}
+              title={`画笔粗细 ${preset.label} (${preset.size}px)`}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
         <div className="flex items-center gap-2">
           <Button type="button" variant="outline" size="sm" onClick={handleUndo} disabled={strokes.length === 0}>
             <RotateCcw className="size-4" />
