@@ -9,6 +9,7 @@ export type ImageTreeAsset = {
   sequenceNumber?: number;
   width?: number;
   height?: number;
+  source?: "upload" | "generated";
 };
 
 export type ImageNode = {
@@ -38,6 +39,13 @@ export type AddNodePayload = {
   prompt: string;
 };
 
+export type ImageTreeSnapshot = {
+  nodesById: Record<string, ImageNode>;
+  rootNodeId: string | null;
+  currentNodeId: string | null;
+  nextImageNumber: number;
+};
+
 type ImageTreeState = {
   nodesById: Record<string, ImageNode>;
   rootNodeId: string | null;
@@ -48,6 +56,8 @@ type ImageTreeState = {
   navigateNode: (nodeId: string) => void;
   getCurrentNode: () => ImageNode | null;
   getAncestors: (nodeId?: string | null) => ImageNode[];
+  exportTree: () => ImageTreeSnapshot;
+  replaceTree: (snapshot: ImageTreeSnapshot) => void;
   resetTree: () => void;
 };
 
@@ -160,6 +170,25 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
     }
 
     return ancestors;
+  },
+
+  exportTree: () => {
+    const { nodesById, rootNodeId, currentNodeId, nextImageNumber } = get();
+    return {
+      nodesById,
+      rootNodeId,
+      currentNodeId,
+      nextImageNumber,
+    };
+  },
+
+  replaceTree: (snapshot) => {
+    set({
+      nodesById: snapshot.nodesById,
+      rootNodeId: snapshot.rootNodeId,
+      currentNodeId: snapshot.currentNodeId,
+      nextImageNumber: Math.max(1, snapshot.nextImageNumber),
+    });
   },
 
   resetTree: () => {

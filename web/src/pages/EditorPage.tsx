@@ -2,8 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, Download, GitBranch, ImagePlus, Loader2, RotateCcw, Send, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, Check, Download, GitBranch, History, ImagePlus, Loader2, RotateCcw, Send, Trash2, Upload, X } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 import {
   RetouchCanvas,
@@ -20,6 +29,16 @@ import {
   type ImageNode,
   type ImageTreeAsset,
 } from "@/store/useImageTreeStore";
+import {
+  clearRetouchHistorySessions,
+  deleteRetouchHistorySession,
+  getRetouchHistoryStats,
+  getRetouchSessionPreviewUrl,
+  listRetouchHistorySessions,
+  RETOUCH_HISTORY_CHANGED_EVENT,
+  saveRetouchHistorySession,
+  type RetouchHistorySession,
+} from "@/store/retouch-history";
 
 type PageStatus = "empty" | "editing" | "submitting" | "polling" | "success_split" | "error";
 type SplitSelection = "source" | "result" | null;
@@ -34,12 +53,34 @@ function createRandomId(prefix: string) {
   return `${prefix}-${random}`;
 }
 
-function createImageAsset(file: File): ImageTreeAsset {
+function createImageAsset(file: File, dataUrl: string): ImageTreeAsset {
   return {
     id: createRandomId("upload"),
-    url: URL.createObjectURL(file),
+    url: dataUrl,
     name: file.name,
+    source: "upload",
   };
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("读取上传图片失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function createSessionTitle(fileName: string, fallbackPrompt: string) {
+  const cleanFileName = fileName.replace(/\.[^.]+$/, "").trim();
+  if (cleanFileName) {
+    return cleanFileName.slice(0, 48);
+  }
+  const cleanPrompt = fallbackPrompt.trim();
+  if (cleanPrompt) {
+    return cleanPrompt.slice(0, 48);
+  }
+  return "未命名修图";
 }
 
 function createGeneratedAsset(task: CreationTask): ImageTreeAsset {
@@ -53,6 +94,7 @@ function createGeneratedAsset(task: CreationTask): ImageTreeAsset {
     id: createRandomId(`generated-${task.id}`),
     url,
     name: item?.revised_prompt || "生成结果",
+    source: "generated",
     width: item?.width,
     height: item?.height,
   };
@@ -183,11 +225,54 @@ function getUniqueImages(nodesById: Record<string, ImageNode>) {
   return Array.from(images.values()).sort((a, b) => (a.sequenceNumber ?? 0) - (b.sequenceNumber ?? 0));
 }
 
+function getNodePreviewUrl(node: ImageNode | null) {
+  if (!node) {
+    return undefined;
+  }
+  return (node.generatedImage ?? node.baseImage).url;
+}
+
+function formatHistoryTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return "刚刚";
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function buildRetouchSession(
+  id: string,
+  title: string,
+  createdAt: string,
+  draftPrompt: string,
+  existing?: RetouchHistorySession,
+): RetouchHistorySession | null {
+  const tree = useImageTreeStore.getState().exportTree();
+  if (!tree.rootNodeId || !tree.nodesById[tree.rootNodeId]) {
+    return null;
+  }
+  const currentNode = tree.currentNodeId ? tree.nodesById[tree.currentNodeId] : tree.nodesById[tree.rootNodeId];
+  return {
+    ...tree,
+    id,
+    title: title.trim() || existing?.title || "未命名修图",
+    createdAt: existing?.createdAt || createdAt,
+    updatedAt: new Date().toISOString(),
+    thumbnailUrl: getNodePreviewUrl(currentNode) || existing?.thumbnailUrl,
+    draftPrompt,
+  };
+}
 export default function EditorPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const retouchCanvasRef = useRef<RetouchCanvasHandle | null>(null);
   const generationRunIdRef = useRef(0);
   const activeTaskIdRef = useRef<string | null>(null);
+  const sessionsRef = useRef<RetouchHistorySession[]>([]);
   const [prompt, setPrompt] = useState("");
   const [pageStatus, setPageStatus] = useState<PageStatus>("empty");
   const [splitSelection, setSplitSelection] = useState<SplitSelection>(null);
@@ -200,11 +285,17 @@ export default function EditorPage() {
   const [errorMessage, setErrorMessage] = useState("");
   const [brushSize, setBrushSize] = useState(5);
   const [sourceFilesByAssetId, setSourceFilesByAssetId] = useState<Record<string, File>>({});
+  const [historySessions, setHistorySessions] = useState<RetouchHistorySession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ type: "one"; id: string } | { type: "all" } | null>(null);
   const addRootNode = useImageTreeStore((state) => state.addRootNode);
   const addNode = useImageTreeStore((state) => state.addNode);
   const navigateNode = useImageTreeStore((state) => state.navigateNode);
   const getAncestors = useImageTreeStore((state) => state.getAncestors);
   const resetTree = useImageTreeStore((state) => state.resetTree);
+  const replaceTree = useImageTreeStore((state) => state.replaceTree);
   const currentNodeId = useImageTreeStore((state) => state.currentNodeId);
   const rootNodeId = useImageTreeStore((state) => state.rootNodeId);
   const nodesById = useImageTreeStore((state) => state.nodesById);
@@ -251,28 +342,112 @@ export default function EditorPage() {
     return () => window.clearInterval(intervalId);
   }, [generatingStartedAt, isGenerating]);
 
-  const handleFile = useCallback((file: File | undefined) => {
+  useEffect(() => {
+    sessionsRef.current = historySessions;
+  }, [historySessions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadHistory = async () => {
+      try {
+        const items = await listRetouchHistorySessions();
+        if (!cancelled) {
+          sessionsRef.current = items;
+          setHistorySessions(items);
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingHistory(false);
+        }
+      }
+    };
+
+    const handleHistoryChanged = () => {
+      void loadHistory();
+    };
+
+    void loadHistory();
+    window.addEventListener(RETOUCH_HISTORY_CHANGED_EVENT, handleHistoryChanged);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(RETOUCH_HISTORY_CHANGED_EVENT, handleHistoryChanged);
+    };
+  }, []);
+
+  const persistActiveSession = useCallback(async (draftPrompt = prompt) => {
+    if (!activeSessionId) {
+      return null;
+    }
+    const existing = sessionsRef.current.find((session) => session.id === activeSessionId);
+    const session = buildRetouchSession(
+      activeSessionId,
+      existing?.title || "未命名修图",
+      existing?.createdAt || new Date().toISOString(),
+      draftPrompt,
+      existing,
+    );
+    if (!session) {
+      return null;
+    }
+    sessionsRef.current = [
+      session,
+      ...sessionsRef.current.filter((item) => item.id !== session.id),
+    ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    setHistorySessions(sessionsRef.current);
+    await saveRetouchHistorySession(session);
+    return session;
+  }, [activeSessionId, prompt]);
+
+  useEffect(() => {
+    if (!activeSessionId || !rootNodeId) {
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void persistActiveSession(prompt);
+    }, 600);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeSessionId, persistActiveSession, prompt, rootNodeId]);
+  const handleFile = useCallback(async (file: File | undefined) => {
     if (!file || !file.type.startsWith("image/")) {
       return;
     }
 
-    const rootNode = addRootNode({
-      baseImage: createImageAsset(file),
-      prompt,
-    });
-    setSourceFilesByAssetId({ [rootNode.baseImage.id]: file });
-    setHasCanvasMarks(false);
-    setPendingSourceImage(null);
-    setPendingMaskData(undefined);
-    setErrorMessage("");
-    setSplitSelection(null);
-    setPageStatus("editing");
-  }, [addRootNode, prompt]);
+    try {
+      await persistActiveSession(prompt);
+      const dataUrl = await readFileAsDataUrl(file);
+      const rootNode = addRootNode({
+        baseImage: createImageAsset(file, dataUrl),
+        prompt,
+      });
+      const sessionId = createRandomId("retouch-session");
+      const title = createSessionTitle(file.name, prompt);
+      setSourceFilesByAssetId({ [rootNode.baseImage.id]: file });
+      setActiveSessionId(sessionId);
+      setHasCanvasMarks(false);
+      setPendingSourceImage(null);
+      setPendingMaskData(undefined);
+      setErrorMessage("");
+      setSplitSelection(null);
+      setPageStatus("editing");
 
-  const handleRemoveImage = useCallback(() => {
+      const session = buildRetouchSession(sessionId, title, new Date().toISOString(), prompt);
+      if (session) {
+        sessionsRef.current = [session, ...sessionsRef.current.filter((item) => item.id !== session.id)];
+        setHistorySessions(sessionsRef.current);
+        await saveRetouchHistorySession(session);
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "读取上传图片失败");
+      setPageStatus(currentNode ? "error" : "empty");
+    }
+  }, [addRootNode, currentNode, persistActiveSession, prompt]);
+
+  const handleRemoveImage = useCallback(async () => {
+    await persistActiveSession(prompt);
     generationRunIdRef.current += 1;
     activeTaskIdRef.current = null;
     resetTree();
+    setActiveSessionId(null);
     setSourceFilesByAssetId({});
     setPrompt("");
     setHasCanvasMarks(false);
@@ -282,7 +457,7 @@ export default function EditorPage() {
     setSplitSelection(null);
     setPageStatus("empty");
     setGeneratingStartedAt(null);
-  }, [resetTree]);
+  }, [persistActiveSession, prompt, resetTree]);
 
   const handleSelectSplitImage = useCallback((selection: Exclude<SplitSelection, null>) => {
     setSplitSelection(selection);
@@ -332,8 +507,76 @@ export default function EditorPage() {
     setHasCanvasMarks(false);
     setSplitSelection(null);
     setPageStatus(node.generatedImage ? "success_split" : "editing");
-  }, [isGenerating, navigateNode]);
+    window.setTimeout(() => void persistActiveSession(prompt), 0);
+  }, [isGenerating, navigateNode, persistActiveSession, prompt]);
 
+  const resetWorkspace = useCallback(() => {
+    generationRunIdRef.current += 1;
+    activeTaskIdRef.current = null;
+    resetTree();
+    setActiveSessionId(null);
+    setSourceFilesByAssetId({});
+    setPrompt("");
+    setHasCanvasMarks(false);
+    setPendingSourceImage(null);
+    setPendingMaskData(undefined);
+    setErrorMessage("");
+    setSplitSelection(null);
+    setPageStatus("empty");
+    setGeneratingStartedAt(null);
+  }, [resetTree]);
+
+  const handleOpenHistorySession = useCallback(async (sessionId: string) => {
+    if (isGenerating) {
+      return;
+    }
+    await persistActiveSession(prompt);
+    const session = sessionsRef.current.find((item) => item.id === sessionId);
+    if (!session) {
+      return;
+    }
+
+    replaceTree({
+      nodesById: session.nodesById,
+      rootNodeId: session.rootNodeId,
+      currentNodeId: session.currentNodeId,
+      nextImageNumber: session.nextImageNumber,
+    });
+    const restoredNode = session.currentNodeId ? session.nodesById[session.currentNodeId] : null;
+    setActiveSessionId(session.id);
+    setSourceFilesByAssetId({});
+    setPrompt(session.draftPrompt || "");
+    setHasCanvasMarks(false);
+    setPendingSourceImage(null);
+    setPendingMaskData(undefined);
+    setErrorMessage("");
+    setSplitSelection(null);
+    setGeneratingStartedAt(null);
+    setPageStatus(restoredNode?.generatedImage ? "success_split" : "editing");
+    setIsHistoryOpen(false);
+  }, [isGenerating, persistActiveSession, prompt, replaceTree]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    const target = deleteConfirm;
+    if (!target) {
+      return;
+    }
+    if (target.type === "all") {
+      await clearRetouchHistorySessions();
+      sessionsRef.current = [];
+      setHistorySessions([]);
+      resetWorkspace();
+    } else {
+      await deleteRetouchHistorySession(target.id);
+      const nextSessions = sessionsRef.current.filter((session) => session.id !== target.id);
+      sessionsRef.current = nextSessions;
+      setHistorySessions(nextSessions);
+      if (activeSessionId === target.id) {
+        resetWorkspace();
+      }
+    }
+    setDeleteConfirm(null);
+  }, [activeSessionId, deleteConfirm, resetWorkspace]);
   const handleGenerate = useCallback(async () => {
     const nextPrompt = prompt.trim();
     if (!currentNode || !editableImage || !nextPrompt || isGenerating) {
@@ -397,6 +640,7 @@ export default function EditorPage() {
         setPendingMaskData(undefined);
         setPageStatus("success_split");
         setGeneratingStartedAt(null);
+        void persistActiveSession("");
         return true;
       }
 
@@ -474,7 +718,7 @@ export default function EditorPage() {
       setPageStatus("error");
       setGeneratingStartedAt(null);
     }
-  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, pageStatus, pendingMaskData, prompt, sourceFilesByAssetId, splitSelection]);
+  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, pageStatus, pendingMaskData, persistActiveSession, prompt, sourceFilesByAssetId, splitSelection]);
   const renderImageBadge = (image: ImageTreeAsset, variant: "light" | "dark") => (
     <figcaption
       className={[
@@ -580,13 +824,25 @@ export default function EditorPage() {
     <main
       className="relative flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#f5f7fa] text-slate-950"
     >
+      {!currentNode ? (
+        <button
+          type="button"
+          onClick={() => setIsHistoryOpen(true)}
+          className="absolute right-6 top-4 z-50 inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
+        >
+          <History className="size-4" />
+          历史记录
+          <span className="rounded-full bg-slate-950 px-2 py-0.5 text-[11px] font-semibold text-white">{historySessions.length}</span>
+        </button>
+      ) : null}
+
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
         className="hidden"
         onChange={(event) => {
-          handleFile(event.target.files?.[0]);
+          void handleFile(event.target.files?.[0]);
           event.currentTarget.value = "";
         }}
       />
@@ -627,6 +883,15 @@ export default function EditorPage() {
             <div className="absolute right-6 top-0 z-50 flex items-center gap-2">
               <button
                 type="button"
+                onClick={() => setIsHistoryOpen(true)}
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
+              >
+                <History className="size-4" />
+                历史记录
+                <span className="rounded-full bg-slate-950 px-2 py-0.5 text-[11px] font-semibold text-white">{historySessions.length}</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
               >
@@ -635,7 +900,7 @@ export default function EditorPage() {
               </button>
               <button
                 type="button"
-                onClick={handleRemoveImage}
+                onClick={() => void handleRemoveImage()}
                 className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-950/88 px-4 text-sm font-medium text-white shadow-sm backdrop-blur transition hover:bg-slate-800"
               >
                 <Trash2 className="size-4" />
@@ -830,7 +1095,7 @@ export default function EditorPage() {
             onDrop={(event) => {
               event.preventDefault();
               setIsDragging(false);
-              handleFile(event.dataTransfer.files?.[0]);
+              void handleFile(event.dataTransfer.files?.[0]);
             }}
             className={[
               "group flex aspect-[16/10] w-full max-w-5xl flex-col items-center justify-center rounded-[28px]",
@@ -853,6 +1118,133 @@ export default function EditorPage() {
           </button>
         )}
       </section>
+
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+        <DialogContent className="flex h-[min(82dvh,760px)] w-[92vw] max-w-[520px] flex-col overflow-hidden rounded-[28px] border-white/80 bg-white p-0 shadow-[0_32px_110px_-38px_rgba(15,23,42,0.45)]">
+          <DialogHeader className="border-b border-slate-100 px-6 pt-6 pb-4">
+            <DialogTitle className="flex items-center gap-2 text-xl font-bold tracking-tight text-slate-950">
+              <History className="size-5" />
+              Retouch 历史
+            </DialogTitle>
+            <DialogDescription className="text-sm leading-6 text-slate-500">
+              保存当前浏览器内的修图项目，打开后会恢复版本树和输入框 prompt。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-6 py-3">
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+              {historySessions.length} Projects
+            </div>
+            <button
+              type="button"
+              disabled={historySessions.length === 0}
+              onClick={() => setDeleteConfirm({ type: "all" })}
+              className="inline-flex h-9 items-center gap-2 rounded-full bg-white px-3 text-xs font-semibold text-rose-600 ring-1 ring-rose-100 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:ring-slate-100"
+            >
+              <Trash2 className="size-3.5" />
+              清空
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            {isLoadingHistory ? (
+              <div className="flex items-center gap-2 px-2 py-4 text-sm text-slate-500">
+                <Loader2 className="size-4 animate-spin" />
+                正在读取历史记录
+              </div>
+            ) : historySessions.length === 0 ? (
+              <div className="flex h-52 flex-col items-center justify-center rounded-3xl border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center">
+                <History className="size-8 text-slate-300" />
+                <div className="mt-4 text-sm font-semibold text-slate-700">还没有 Retouch 历史</div>
+                <div className="mt-1 text-xs leading-5 text-slate-400">上传图片并生成版本后，会在这里保留项目入口。</div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {historySessions.map((session) => {
+                  const stats = getRetouchHistoryStats(session);
+                  const previewUrl = session.thumbnailUrl || getRetouchSessionPreviewUrl(session);
+                  const active = session.id === activeSessionId;
+                  return (
+                    <div
+                      key={session.id}
+                      className={[
+                        "group relative flex gap-3 rounded-2xl border p-2 transition",
+                        active
+                          ? "border-slate-950/10 bg-slate-950 text-white shadow-[0_14px_40px_rgba(15,23,42,0.18)]"
+                          : "border-transparent bg-slate-50 text-slate-800 hover:border-slate-200 hover:bg-white",
+                      ].join(" ")}
+                    >
+                      <button
+                        type="button"
+                        disabled={isGenerating}
+                        onClick={() => void handleOpenHistorySession(session.id)}
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <span className="size-16 shrink-0 overflow-hidden rounded-xl bg-slate-200 ring-1 ring-black/5">
+                          {previewUrl ? (
+                            <img src={previewUrl} alt={session.title} className="size-full object-cover" />
+                          ) : null}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-semibold">{session.title}</span>
+                          <span className={active ? "mt-1 block text-xs text-white/60" : "mt-1 block text-xs text-slate-500"}>
+                            {stats.imageCount} 张图 · {stats.editCount} 次修图 · {formatHistoryTime(session.updatedAt)}
+                          </span>
+                          {session.draftPrompt ? (
+                            <span className={active ? "mt-1 block truncate text-[11px] text-white/45" : "mt-1 block truncate text-[11px] text-slate-400"}>
+                              {session.draftPrompt}
+                            </span>
+                          ) : null}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeleteConfirm({ type: "one", id: session.id })}
+                        className={[
+                          "absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-full opacity-0 transition group-hover:opacity-100",
+                          active ? "bg-white/10 text-white hover:bg-white/20" : "bg-white text-slate-400 shadow-sm hover:text-rose-600",
+                        ].join(" ")}
+                        aria-label={`删除 ${session.title}`}
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {deleteConfirm ? (
+        <Dialog open onOpenChange={(open) => (!open ? setDeleteConfirm(null) : null)}>
+          <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+            <DialogHeader className="gap-2">
+              <DialogTitle>{deleteConfirm.type === "all" ? "清空 Retouch 历史" : "删除 Retouch 项目"}</DialogTitle>
+              <DialogDescription className="text-sm leading-6">
+                {deleteConfirm.type === "all"
+                  ? "这会删除当前账号在本浏览器内保存的所有 Retouch 历史，当前工作台也会清空。"
+                  : "这会删除这个 Retouch 项目的版本树和本地历史入口。"}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => setDeleteConfirm(null)}
+                className="inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-sm font-medium text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleConfirmDelete()}
+                className="inline-flex h-10 items-center justify-center rounded-full bg-rose-600 px-4 text-sm font-medium text-white transition hover:bg-rose-700"
+              >
+                确认删除
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
       <form
         className="self-center mb-4 flex w-[min(calc(100%-32px),760px)] shrink-0 items-center gap-3 rounded-full bg-white/90 p-2 pl-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)] ring-1 ring-slate-950/5 backdrop-blur-xl"
