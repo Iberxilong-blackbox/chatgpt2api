@@ -24,6 +24,7 @@ type MarkerCandidate = RetouchMarkerColor & {
 
 export type RetouchCanvasHandle = {
   exportMarkedImage: () => Promise<File>;
+  exportMaskDataUrl: () => string;
 };
 
 type RetouchCanvasProps = {
@@ -144,6 +145,32 @@ function drawStroke(context: CanvasRenderingContext2D, stroke: Stroke, outlineCo
 
   drawLine(outlineColor, stroke.width + 8);
   drawLine(stroke.color.css, stroke.width);
+}
+
+function drawMaskStroke(context: CanvasRenderingContext2D, stroke: Stroke) {
+  if (stroke.points.length === 0) {
+    return;
+  }
+
+  context.save();
+  context.lineCap = "round";
+  context.lineJoin = "round";
+  context.strokeStyle = "#ffffff";
+  context.lineWidth = stroke.width + 12;
+  context.beginPath();
+  stroke.points.forEach((point, index) => {
+    if (index === 0) {
+      context.moveTo(point.x, point.y);
+    } else {
+      context.lineTo(point.x, point.y);
+    }
+  });
+  if (stroke.points.length === 1) {
+    const point = stroke.points[0];
+    context.lineTo(point.x + 0.1, point.y + 0.1);
+  }
+  context.stroke();
+  context.restore();
 }
 
 function canvasToFile(canvas: HTMLCanvasElement, fileName: string) {
@@ -315,7 +342,26 @@ export const RetouchCanvas = forwardRef<RetouchCanvasHandle, RetouchCanvasProps>
       const baseName = imageFile?.name.replace(/\.[^.]+$/, "") || "retouch-source";
       return canvasToFile(canvas, `${baseName}-marked.png`);
     },
-  }), [imageFile?.name, redraw, strokes.length]);
+    exportMaskDataUrl() {
+      const canvas = canvasRef.current;
+      if (!canvas || !imageRef.current || strokes.length === 0) {
+        throw new Error("请先标注需要修改的区域");
+      }
+
+      const maskCanvas = document.createElement("canvas");
+      maskCanvas.width = canvas.width;
+      maskCanvas.height = canvas.height;
+      const context = maskCanvas.getContext("2d");
+      if (!context) {
+        throw new Error("导出 mask 失败");
+      }
+
+      context.fillStyle = "#000000";
+      context.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+      strokes.forEach((stroke) => drawMaskStroke(context, stroke));
+      return maskCanvas.toDataURL("image/png");
+    },
+  }), [imageFile?.name, redraw, strokes]);
 
   const handleUndo = () => {
     setStrokes((items) => items.slice(0, -1));

@@ -6,6 +6,7 @@ export type ImageTreeAsset = {
   id: string;
   url: string;
   name?: string;
+  sequenceNumber?: number;
   width?: number;
   height?: number;
 };
@@ -41,6 +42,7 @@ type ImageTreeState = {
   nodesById: Record<string, ImageNode>;
   rootNodeId: string | null;
   currentNodeId: string | null;
+  nextImageNumber: number;
   addRootNode: (payload: AddRootNodePayload) => ImageNode;
   addNode: (payload: AddNodePayload) => ImageNode;
   navigateNode: (nodeId: string) => void;
@@ -61,12 +63,17 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
   nodesById: {},
   rootNodeId: null,
   currentNodeId: null,
+  nextImageNumber: 1,
 
   addRootNode: (payload) => {
+    const state = get();
     const node: ImageNode = {
       id: payload.id ?? createNodeId("image-root"),
       parentId: null,
-      baseImage: payload.baseImage,
+      baseImage: {
+        ...payload.baseImage,
+        sequenceNumber: payload.baseImage.sequenceNumber ?? state.nextImageNumber,
+      },
       maskData: payload.maskData,
       prompt: payload.prompt?.trim() ?? "",
       childrenIds: [],
@@ -77,6 +84,7 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
       nodesById: { [node.id]: node },
       rootNodeId: node.id,
       currentNodeId: node.id,
+      nextImageNumber: (node.baseImage.sequenceNumber ?? state.nextImageNumber) + 1,
     });
 
     return node;
@@ -95,7 +103,10 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
       id: payload.id ?? createNodeId(),
       parentId: parent.id,
       baseImage: payload.baseImage ?? parent.generatedImage ?? parent.baseImage,
-      generatedImage: payload.generatedImage,
+      generatedImage: {
+        ...payload.generatedImage,
+        sequenceNumber: payload.generatedImage.sequenceNumber ?? state.nextImageNumber,
+      },
       maskData: payload.maskData,
       prompt: payload.prompt.trim(),
       childrenIds: [],
@@ -115,6 +126,7 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
       },
       currentNodeId: node.id,
       rootNodeId: current.rootNodeId ?? parent.id,
+      nextImageNumber: Math.max(current.nextImageNumber, (node.generatedImage?.sequenceNumber ?? current.nextImageNumber) + 1),
     }));
 
     return node;
@@ -155,6 +167,7 @@ export const useImageTreeStore = create<ImageTreeState>((set, get) => ({
       nodesById: {},
       rootNodeId: null,
       currentNodeId: null,
+      nextImageNumber: 1,
     });
   },
 }));
