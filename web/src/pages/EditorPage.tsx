@@ -42,8 +42,27 @@ import {
 
 type PageStatus = "empty" | "editing" | "submitting" | "polling" | "success_split" | "error";
 type SplitSelection = "source" | "result" | null;
+type RetouchRequestMode = "api" | "mock";
 
 const CREATION_TASK_POLL_INTERVAL_MS = 2000;
+const RETOUCH_REQUEST_MODE_STORAGE_KEY = "chatgpt2api:retouch_request_mode";
+
+function isRetouchRequestMode(value: unknown): value is RetouchRequestMode {
+  return value === "api" || value === "mock";
+}
+
+function getStoredRetouchRequestMode(): RetouchRequestMode {
+  if (typeof window === "undefined") {
+    return "api";
+  }
+
+  try {
+    const stored = window.localStorage.getItem(RETOUCH_REQUEST_MODE_STORAGE_KEY);
+    return isRetouchRequestMode(stored) ? stored : "api";
+  } catch {
+    return "api";
+  }
+}
 
 function createRandomId(prefix: string) {
   const random =
@@ -81,6 +100,24 @@ function createSessionTitle(fileName: string, fallbackPrompt: string) {
     return cleanPrompt.slice(0, 48);
   }
   return "未命名修图";
+}
+
+function createMockImageEditTask(clientTaskId: string, sourceImage: ImageTreeAsset, prompt: string): CreationTask {
+  const now = new Date().toISOString();
+  return {
+    id: clientTaskId,
+    status: "success",
+    mode: "edit",
+    created_at: now,
+    updated_at: now,
+    data: [
+      {
+        url: sourceImage.url,
+        revised_prompt: `Mock result: ${prompt}`,
+      },
+    ],
+    visibility: "private",
+  };
 }
 
 function createGeneratedAsset(task: CreationTask): ImageTreeAsset {
@@ -284,6 +321,7 @@ export default function EditorPage() {
   const [pendingMaskData, setPendingMaskData] = useState<string | undefined>();
   const [errorMessage, setErrorMessage] = useState("");
   const [brushSize, setBrushSize] = useState(5);
+  const [requestMode, setRequestMode] = useState<RetouchRequestMode>(getStoredRetouchRequestMode);
   const [sourceFilesByAssetId, setSourceFilesByAssetId] = useState<Record<string, File>>({});
   const [historySessions, setHistorySessions] = useState<RetouchHistorySession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -345,6 +383,14 @@ export default function EditorPage() {
   useEffect(() => {
     sessionsRef.current = historySessions;
   }, [historySessions]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RETOUCH_REQUEST_MODE_STORAGE_KEY, requestMode);
+    } catch {
+      // Local storage can be unavailable in private browsing contexts.
+    }
+  }, [requestMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -657,6 +703,15 @@ export default function EditorPage() {
     };
 
     try {
+      if (requestMode === "mock") {
+        await sleep(650);
+        if (generationRunIdRef.current !== runId) {
+          return;
+        }
+        applyTerminalTask(createMockImageEditTask(clientTaskId, lockedSourceImage, nextPrompt));
+        return;
+      }
+
       const sourceFile = await imageAssetToFile(lockedSourceImage, sourceFilesByAssetId[lockedSourceImage.id] ?? null);
       if (generationRunIdRef.current !== runId) {
         return;
@@ -718,7 +773,7 @@ export default function EditorPage() {
       setPageStatus("error");
       setGeneratingStartedAt(null);
     }
-  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, pageStatus, pendingMaskData, persistActiveSession, prompt, sourceFilesByAssetId, splitSelection]);
+  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, pageStatus, pendingMaskData, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
   const renderImageBadge = (image: ImageTreeAsset, variant: "light" | "dark") => (
     <figcaption
       className={[
@@ -730,6 +785,25 @@ export default function EditorPage() {
     </figcaption>
   );
 
+  const renderRequestModeToggle = () => (
+    <div className="inline-flex h-10 items-center rounded-full bg-white/88 p-1 shadow-sm ring-1 ring-slate-950/10 backdrop-blur" aria-label="Retouch 请求模式">
+      {(["api", "mock"] as const).map((mode) => (
+        <button
+          key={mode}
+          type="button"
+          disabled={isGenerating}
+          onClick={() => setRequestMode(mode)}
+          className={[
+            "h-8 rounded-full px-3 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-60",
+            requestMode === mode ? "bg-slate-950 text-white shadow-sm" : "text-slate-500 hover:bg-slate-100 hover:text-slate-950",
+          ].join(" ")}
+          title={mode === "api" ? "使用真实 API 生成" : "使用本地 Mock 结果调试页面"}
+        >
+          {mode === "api" ? "API" : "Mock"}
+        </button>
+      ))}
+    </div>
+  );
   const renderDownloadButton = (image: ImageTreeAsset) => (
     <button
       type="button"
@@ -881,6 +955,7 @@ export default function EditorPage() {
               document.body,
             ) : null}
             <div className="absolute right-6 top-0 z-50 flex items-center gap-2">
+              {renderRequestModeToggle()}
               <button
                 type="button"
                 onClick={() => setIsHistoryOpen(true)}
@@ -963,7 +1038,7 @@ export default function EditorPage() {
                       <img
                         src={displaySourceImage.url}
                         alt={displaySourceImage.name ?? "原图"}
-                        className="size-full object-cover transition duration-500 group-hover:scale-[1.02]"
+                        className="size-full object-contain transition duration-500"
                       />
                     )}
                     {renderImageBadge(displaySourceImage, "light")}
@@ -1028,7 +1103,7 @@ export default function EditorPage() {
                         <img
                           src={resultImage.url}
                           alt={resultImage.name ?? "生成图"}
-                          className="size-full object-cover transition duration-500 group-hover:scale-[1.02]"
+                          className="size-full object-contain transition duration-500"
                         />
                       )
                     ) : (
