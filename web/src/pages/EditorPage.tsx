@@ -18,6 +18,7 @@ import {
   RetouchCanvas,
   type RetouchCanvasHandle,
 } from "@/app/retouch/components/retouch-canvas";
+import { buildRetouchPrompt, type RetouchMarkerColor } from "@/app/retouch/retouch-prompt";
 import {
   cancelCreationTask,
   createImageEditTask,
@@ -317,6 +318,7 @@ export default function EditorPage() {
   const [generatingStartedAt, setGeneratingStartedAt] = useState<number | null>(null);
   const [generationElapsedSeconds, setGenerationElapsedSeconds] = useState(0);
   const [hasCanvasMarks, setHasCanvasMarks] = useState(false);
+  const [markerColor, setMarkerColor] = useState<RetouchMarkerColor | null>(null);
   const [pendingSourceImage, setPendingSourceImage] = useState<ImageTreeAsset | null>(null);
   const [pendingMaskData, setPendingMaskData] = useState<string | undefined>();
   const [errorMessage, setErrorMessage] = useState("");
@@ -470,6 +472,7 @@ export default function EditorPage() {
       setSourceFilesByAssetId({ [rootNode.baseImage.id]: file });
       setActiveSessionId(sessionId);
       setHasCanvasMarks(false);
+      setMarkerColor(null);
       setPendingSourceImage(null);
       setPendingMaskData(undefined);
       setErrorMessage("");
@@ -497,6 +500,7 @@ export default function EditorPage() {
     setSourceFilesByAssetId({});
     setPrompt("");
     setHasCanvasMarks(false);
+    setMarkerColor(null);
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
     setErrorMessage("");
@@ -514,6 +518,7 @@ export default function EditorPage() {
     setErrorMessage("");
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
+    setMarkerColor(null);
     setSplitSelection(null);
     setPageStatus(resultImage ? "success_split" : "editing");
   }, [resultImage]);
@@ -527,6 +532,7 @@ export default function EditorPage() {
     setGeneratingStartedAt(null);
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
+    setMarkerColor(null);
     setSplitSelection(null);
     setPageStatus(resultImage ? "success_split" : "editing");
 
@@ -551,6 +557,7 @@ export default function EditorPage() {
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
     setHasCanvasMarks(false);
+    setMarkerColor(null);
     setSplitSelection(null);
     setPageStatus(node.generatedImage ? "success_split" : "editing");
     window.setTimeout(() => void persistActiveSession(prompt), 0);
@@ -564,6 +571,7 @@ export default function EditorPage() {
     setSourceFilesByAssetId({});
     setPrompt("");
     setHasCanvasMarks(false);
+    setMarkerColor(null);
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
     setErrorMessage("");
@@ -593,6 +601,7 @@ export default function EditorPage() {
     setSourceFilesByAssetId({});
     setPrompt(session.draftPrompt || "");
     setHasCanvasMarks(false);
+    setMarkerColor(null);
     setPendingSourceImage(null);
     setPendingMaskData(undefined);
     setErrorMessage("");
@@ -632,6 +641,7 @@ export default function EditorPage() {
       return;
     }
 
+    const retouchPrompt = markerColor ? buildRetouchPrompt(nextPrompt, markerColor.name) : nextPrompt;
     const lockedSourceImage = editableImage;
     const parentId = currentNode.id;
     const runId = generationRunIdRef.current + 1;
@@ -708,7 +718,7 @@ export default function EditorPage() {
         if (generationRunIdRef.current !== runId) {
           return;
         }
-        applyTerminalTask(createMockImageEditTask(clientTaskId, lockedSourceImage, nextPrompt));
+        applyTerminalTask(createMockImageEditTask(clientTaskId, lockedSourceImage, retouchPrompt));
         return;
       }
 
@@ -720,7 +730,7 @@ export default function EditorPage() {
       const submittedTask = await createImageEditTask(
         clientTaskId,
         sourceFile,
-        nextPrompt,
+        retouchPrompt,
         undefined,
         undefined,
         undefined,
@@ -773,7 +783,7 @@ export default function EditorPage() {
       setPageStatus("error");
       setGeneratingStartedAt(null);
     }
-  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, pageStatus, pendingMaskData, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
+  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, markerColor, pageStatus, pendingMaskData, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
   const renderImageBadge = (image: ImageTreeAsset, variant: "light" | "dark") => (
     <figcaption
       className={[
@@ -890,7 +900,10 @@ export default function EditorPage() {
       brushSize={brushSize}
       onBrushSizeChange={setBrushSize}
       className="size-full min-h-0 flex-1 gap-2 [&>div:first-child]:min-h-0 [&>div:first-child]:rounded-[24px] [&>div:first-child]:border-0 [&>div:first-child]:shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)]"
-      onMarkerChange={(_, hasMarks) => setHasCanvasMarks(hasMarks)}
+      onMarkerChange={(color, hasMarks) => {
+        setMarkerColor(hasMarks ? color : null);
+        setHasCanvasMarks(hasMarks);
+      }}
     />
   );
 
