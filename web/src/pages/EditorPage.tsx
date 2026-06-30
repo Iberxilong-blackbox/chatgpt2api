@@ -320,7 +320,7 @@ export default function EditorPage() {
   const [hasCanvasMarks, setHasCanvasMarks] = useState(false);
   const [markerColor, setMarkerColor] = useState<RetouchMarkerColor | null>(null);
   const [pendingSourceImage, setPendingSourceImage] = useState<ImageTreeAsset | null>(null);
-  const [pendingMaskData, setPendingMaskData] = useState<string | undefined>();
+  const [, setPendingMaskData] = useState<string | undefined>();
   const [errorMessage, setErrorMessage] = useState("");
   const [brushSize, setBrushSize] = useState(5);
   const [requestMode, setRequestMode] = useState<RetouchRequestMode>(getStoredRetouchRequestMode);
@@ -641,29 +641,16 @@ export default function EditorPage() {
       return;
     }
 
-    const retouchPrompt = markerColor ? buildRetouchPrompt(nextPrompt, markerColor.name) : nextPrompt;
+    const retouchPrompt = hasCanvasMarks && markerColor ? buildRetouchPrompt(nextPrompt, markerColor.name) : nextPrompt;
     const lockedSourceImage = editableImage;
     const parentId = currentNode.id;
     const runId = generationRunIdRef.current + 1;
     const clientTaskId = createRandomId("retouch-task");
-    let maskData: string | undefined = pageStatus === "error" ? pendingMaskData : undefined;
-
-    if (pageStatus !== "error" && hasCanvasMarks && retouchCanvasRef.current) {
-      try {
-        maskData = retouchCanvasRef.current.exportMaskDataUrl();
-      } catch (error) {
-        setErrorMessage(formatCreationTaskErrorMessage(error instanceof Error ? error.message : "导出 mask 失败"));
-        setPendingSourceImage(lockedSourceImage);
-        setPendingMaskData(undefined);
-        setPageStatus("error");
-        return;
-      }
-    }
 
     generationRunIdRef.current = runId;
     activeTaskIdRef.current = null;
     setPendingSourceImage(lockedSourceImage);
-    setPendingMaskData(maskData);
+    setPendingMaskData(undefined);
     setErrorMessage("");
     setPageStatus("submitting");
     setGeneratingStartedAt(Date.now());
@@ -681,7 +668,6 @@ export default function EditorPage() {
             baseImage: lockedSourceImage,
             prompt: nextPrompt,
             generatedImage: createGeneratedAsset(task),
-            maskData,
           });
         } catch (error) {
           setErrorMessage(formatCreationTaskErrorMessage(error instanceof Error ? error.message : "生成结果写入失败"));
@@ -722,7 +708,12 @@ export default function EditorPage() {
         return;
       }
 
-      const sourceFile = await imageAssetToFile(lockedSourceImage, sourceFilesByAssetId[lockedSourceImage.id] ?? null);
+      const sourceFile = hasCanvasMarks
+        ? await retouchCanvasRef.current?.exportMarkedImage()
+        : await imageAssetToFile(lockedSourceImage, sourceFilesByAssetId[lockedSourceImage.id] ?? null);
+      if (!sourceFile) {
+        throw new Error("标注画布未就绪，请重新提交");
+      }
       if (generationRunIdRef.current !== runId) {
         return;
       }
@@ -740,7 +731,7 @@ export default function EditorPage() {
         undefined,
         undefined,
         undefined,
-        maskData ? { inputImageMask: maskData } : undefined,
+        undefined,
       );
       if (generationRunIdRef.current !== runId) {
         try {
@@ -783,7 +774,7 @@ export default function EditorPage() {
       setPageStatus("error");
       setGeneratingStartedAt(null);
     }
-  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, markerColor, pageStatus, pendingMaskData, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
+  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, markerColor, pageStatus, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
   const renderImageBadge = (image: ImageTreeAsset, variant: "light" | "dark") => (
     <figcaption
       className={[
