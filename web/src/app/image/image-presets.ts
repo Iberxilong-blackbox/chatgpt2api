@@ -30,22 +30,113 @@ export const IMAGE_PROMPT_PRESETS: ImagePromptPreset[] = [
     size: "4:3",
   },
   {
-    id: "editorial-fashion",
-    title: "古风联动宣传图",
-    prompt:
-      "《倚天屠龙记》周芷若的维秘联动活动宣传图，人物占画面 80% 以上，周芷若在古风古城城墙上，优雅侧身回眸姿态，突出古典美人身姿曲线，穿着维秘联动款：融合古风元素的蕾丝吊带裙，搭配精致吊带丝袜（黑色或淡青色，带有轻微古风刺绣），丝袜包裹修长双腿，整体造型唯美古典。高品质真人级 3D 古风游戏截图风格，电影级光影，周芷若清丽绝俗、长发微散，眼神柔美回眸，轻纱飘逸。背景为夜晚古城墙，青砖城垛、灯笼照明、月光洒落，古建筑灯火点点，氛围梦幻唯美。高细节，8K 品质，精致渲染，真实丝袜质感，电影级构图，光影细腻，古典武侠风。",
-    hint: "古风角色联动、游戏活动主视觉、电影感人物宣传图。",
-    imageSrc: "/presets/editorial-fashion.webp",
+    id: "meining-ziyi",
+    title: "凡人联动宣传图",
+    prompt: `{
+  "project_type": "cinematic 3D Chinese Xianxia animation theatrical key visual poster",
+  "aspect_ratio": "9:16",
+  "overall_aesthetic": "ethereal, classical Chinese Xianxia, soft and elegant, cinematic atmosphere, poetic and beautiful",
+  
+  "masthead": {
+    "title_logo": "凡人修仙传",
+    "english_title": "A Record of a Mortal's Journey to Immortality",
+    "subtitle_character": "梅 凝 · MEI NING",
+    "position": "top center",
+    "typography": "traditional Chinese calligraphy font, elegant, golden-glowing strokes",
+    "issue_metadata": "CHAPTER: YINMING REALM // THEATRICAL PROMO POSTER"
+  },
+  
+  "hero_subject": {
+    "character": "Preserve the exact face identity and facial features of Mei Ning from the uploaded image without alteration",
+    "physique_feature": "A beautiful young immortal woman (19-22) with a demure and gentle expression, looking slightly away from the camera with soft, emotional eyes",
+    "hair_style": "Neat classical Chinese updo with soft loose strands of hair framing her face, catching the rim light",
+    "wardrobe": "Flowing traditional Hanfu robes in soft lavender-purple and pearl-white, delicate silk and chiffon fabric textures flowing gracefully",
+    "spiritual_effect": "A subtle, soft-glowing ethereal white spiritual light (通灵之气) radiating gently around her shoulders and palms, representing her Phoenix Marrow body (通玉凤髓之体)"
+  },
+  
+  "cover_lines_and_headlines": {
+    "primary_tagline": {
+      "text": "通玉凤髓，一世温婉",
+      "position": "lower third, neatly arranged vertically or horizontally",
+      "style": "clean traditional Chinese font, soft white glow with gold outline"
+    },
+    "sub_details": [
+      {
+        "text": "乱星海 · 阴冥之地",
+        "position": "left middle side"
+      },
+      {
+        "text": "漫漫修仙，凡人凡心",
+        "position": "right middle side, vertical alignment"
+      }
+    ]
+  },
+  
+  "composition_and_layout": {
+    "background": "epic misty Xianxia mountains, swirling ethereal white clouds, traditional ink-wash silhouettes of distant cliffs, a hint of ancient Taoist pavilion in the fog",
+    "foreground_accents": "floating translucent white jade petals and spiritual light particles drifting across the frame, creating atmospheric depth",
+    "framing": "medium shot, upper body visible, elegant 3D cinematic depth of field, sharp focus on the character"
+  },
+  
+  "chromatic_specification": {
+    "primary_color": "#D2C4E3",
+    "accent_colors": [
+      "#FFFFFF",
+      "#A3B8CC",
+      "#E8DDF2",
+      "#E5C8A0"
+    ],
+    "color_description": "A harmonious blend of soft lavender, mist blue, pearl white, with a warm golden sunset glow filtering through the background fog"
+  },
+  
+  "technical_negatives": [
+    "modern western clothing",
+    "neon lights",
+    "futuristic cyberpunk elements",
+    "cheap flat 2D cartoon coloring",
+    "ugly distorted face",
+    "plastic skin texture",
+    "messy alignment of Chinese text",
+    "dark gothic atmosphere"
+  ]
+}`,
+    hint: "JSON结构化设计海报。",
+    imageSrc: "/presets/meining-ziyi.webp",
     count: 1,
     size: "9:16",
   },
   {
-    id: "forza-horizon-shenzhen",
-    title: "地平线深圳实机图",
-    prompt:
-      "创作一张图片为《极限竞速 地平线 8》的游戏实机截图，游戏背景设为中国，背景城市为深圳，时间设定为 2028 年。画面需要体现真实次世代开放世界赛车游戏的实机演出效果，包含具有深圳辨识度的城市天际线、现代高楼、道路环境、灯光氛围与速度感。构图中在合适位置放置《极限竞速 地平线 8》的 logo 及宣传文案，整体像官方概念宣传截图而不是普通海报。要求 8K 超高清，电影级光影，真实车辆材质、反射、路面细节与空气透视，画面高级、震撼、写实。",
-    hint: "游戏主视觉、次世代赛车截图、城市宣传感概念图。",
-    imageSrc: "/presets/forza-horizon-shenzhen.webp",
+    id: "MossBrew",
+    title: "后末日时代温室咖啡馆MossBrew",
+    prompt: `CRITICAL DIRECTIVE: Create a breathtaking, high-impact official animation Key Visual (KV) poster based on the theme: "[Post-apocalyptic cozy greenhouse cafe run by a young cyberpunk witch, brewing glowing neon potions in espresso machines, surrounded by overgrown plants, ancient rusted robots acting as mossy flowerpots, warm golden sunlight streaming through cracked glass]". The composition must be structured like a professional theatrical anime promo poster, seamlessly weaving character, background, logo, and tagline into a single, cohesive cinematic narrative.
+
+1. THEATRICAL KEY VISUAL LAYOUT & COMPOSITION
+- Dynamic Layering: A masterful three-tier composition. 
+  - Foreground: The main protagonist standing in a dynamic, heroic, or contemplative pose, looking slightly off-camera.
+  - Midground: Supporting companions and key antagonist silhouettes framing the sides, creating a sense of conflict.
+  - Background: A sweeping, epic-scale panoramic vista that immediately establishes the world's lore and setting.
+- Composition Style: Golden triangle layout, strong sense of scale and depth of field, cinematic poster format.
+
+2. LOGO, TYPOGRAPHY & PROMOTIONAL SLOGAN
+- Anime Title Logo: A beautifully stylized, bold title logo integrated seamlessly at the [bottom center / top center] of the poster. The logo design must match the aesthetics of "[Post-apocalyptic cozy greenhouse cafe run by a young cyberpunk witch, brewing glowing neon potions in espresso machines, surrounded by overgrown plants, ancient rusted robots acting as mossy flowerpots, warm golden sunlight streaming through cracked glass]".
+- English Subtitle & Slogan: Below the logo, include a clean, highly legible tagline in a minimalist sans-serif font. The tagline reads: "废土之上的温暖港湾".
+- Studio Credits Block: A tiny, neat, out-of-focus credit block (cast & staff placeholders) at the very bottom edge to enhance the authentic theatrical poster feel.
+
+3. THEME-SPECIFIC CHARACTER & SCENERY DETAILS
+- Character Design: Highly appealing and charismatic anime character designs fitting the "[Post-apocalyptic cozy greenhouse cafe run by a young cyberpunk witch, brewing glowing neon potions in espresso machines, surrounded by overgrown plants, ancient rusted robots acting as mossy flowerpots, warm golden sunlight streaming through cracked glass]". Exquisite clothing details, hair catching the wind, and expressive eyes with intense focal depth.
+- Environmental World-building: The background features epic scenery representing "[Post-apocalyptic cozy greenhouse cafe run by a young cyberpunk witch, brewing glowing neon potions in espresso machines, surrounded by overgrown plants, ancient rusted robots acting as mossy flowerpots, warm golden sunlight streaming through cracked glass]". Rich in textures, atmospheric particles (dust, embers, or flower petals) drifting across the frame.
+
+4. CINEMATOGRAPHY, LIGHTING & PALETTE
+- Dramatic Lighting: Volumetric god-rays, strong cinematic rim-lighting highlighting the characters' silhouettes, high-contrast chiaroscuro shadows.
+- Color Grading: Professional movie-grade color palette designed for "[Post-apocalyptic cozy greenhouse cafe run by a young cyberpunk witch, brewing glowing neon potions in espresso machines, surrounded by overgrown plants, ancient rusted robots acting as mossy flowerpots, warm golden sunlight streaming through cracked glass]" (e.g., teal and orange, neon cyberpunk, or dark fantasy warm amber). Beautiful color harmony and depth.
+- Camera Spec: Shot on anamorphic lens, shallow depth of field, subtle organic film grain, theatrical anime movie quality.
+
+5. TECHNICAL LIMITATIONS & NEGATIVE PROMPT
+Negative: (messy gibberish text overlapping characters, chaotic layout, ugly font, blurry logos, casual snapshot, low-quality fan art, deformed faces, bad anatomy, flat lighting, 2D flat coloring with no depth, 3D CGI plastic render).
+
+--ar 9:16 --style raw --v 6.0`,
+    hint: "关键视觉（KV）主题电影海报",
+    imageSrc: "/presets/MossBrew.webp",
     count: 1,
     size: "16:9",
   },
