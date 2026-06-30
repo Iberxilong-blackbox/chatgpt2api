@@ -27,6 +27,51 @@ log_info()  { echo -e "${GREEN}[INFO]${NC}  $1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
+# merge_env src dst — 单向合并 .env，仅补充新 key，不覆盖已有值
+merge_env() {
+    local src="$1" dst="$2"
+
+    if [ ! -f "$dst" ]; then
+        cp "$src" "$dst"
+        log_info ".env 已创建"
+        return
+    fi
+
+    local tmp_dst
+    tmp_dst=$(mktemp) || { log_error "创建临时文件失败"; return 1; }
+    cp "$dst" "$tmp_dst"
+    local added=0
+
+    while IFS= read -r line; do
+        # 跳过空行和注释
+        [[ "$line" =~ ^[[:space:]]*# || "$line" =~ ^[[:space:]]*$ ]] && continue
+
+        # 提取 key（去掉 export 前缀，取第一个 = 之前的部分）
+        local key="${line#export }"
+        # 去掉行首空白
+        key="${key#"${key%%[![:space:]]*}"}"
+        key="${key%%=*}"
+        key="${key%"${key##*[![:space:]]}"}"
+        [[ -z "$key" ]] && continue
+
+        # 如果运行目录已有该 key，跳过
+        if grep -qE "^(export[[:space:]]+)?${key}=" "$tmp_dst" 2>/dev/null; then
+            continue
+        fi
+
+        echo "$line" >> "$tmp_dst"
+        added=$((added + 1))
+    done < "$src"
+
+    if [ "$added" -gt 0 ]; then
+        mv "$tmp_dst" "$dst"
+        log_info "已新增 ${added} 条配置项"
+    else
+        rm "$tmp_dst"
+        log_info ".env 已是最新，无需更新"
+    fi
+}
+
 sync_warming_prompts() {
     local src="${PROJECT_DIR}/data/warming_prompts.json"
     local dst_dir="${INSTALL_DIR}/data"
@@ -79,12 +124,11 @@ if [ "${1:-}" = "--env" ]; then
     log_info "停止服务 ${SERVICE_NAME}..."
     systemctl stop "$SERVICE_NAME"
 
-    # 更新 .env
+    # 更新 .env（单向合并，不覆盖运行目录已有的 key）
     log_info "更新 .env 配置文件..."
-    cp .env "${INSTALL_DIR}/.env"
+    merge_env .env "${INSTALL_DIR}/.env"
     chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/.env"
     chmod 640 "${INSTALL_DIR}/.env"
-    log_info ".env 已更新"
 
     # 启动服务
     log_info "启动服务 ${SERVICE_NAME}..."
@@ -193,22 +237,15 @@ chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/${BINARY}"
 chmod 755 "${INSTALL_DIR}/${BINARY}"
 log_info "二进制文件已更新"
 
-# 5. 同步 .env 配置文件
-log_info "更新 .env 配置文件..."
-cp .env "${INSTALL_DIR}/.env"
-chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/.env"
-chmod 640 "${INSTALL_DIR}/.env"
-log_info ".env 已更新"
-
-# 6. 同步运行时数据文件
+# 5. 同步运行时数据文件
 sync_warming_prompts
 
-# 7. 启动服务
+# 6. 启动服务
 log_info "启动服务 ${SERVICE_NAME}..."
 systemctl start "$SERVICE_NAME"
 log_info "服务已启动"
 
-# 8. 检查状态
+# 7. 检查状态
 sleep 1
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     log_info "服务运行正常"
