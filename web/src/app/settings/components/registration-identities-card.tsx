@@ -56,7 +56,7 @@ export function RegistrationIdentitiesCard() {
       const data = await fetchRegistrationIdentities();
       setItems(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "加载注册身份 ID 失败");
+      toast.error(error instanceof Error ? error.message : "加载好友 ID 失败");
     } finally {
       if (!silent) setIsLoading(false);
     }
@@ -89,7 +89,7 @@ export function RegistrationIdentitiesCard() {
   const handleAdd = async () => {
     const nextIdentityId = identityId.trim();
     if (!nextIdentityId) {
-      toast.error("请输入身份 ID");
+      toast.error("请输入好友 ID");
       return;
     }
     setIsSaving(true);
@@ -99,9 +99,9 @@ export function RegistrationIdentitiesCard() {
       setCurrentPage(1);
       setIdentityId("");
       setLabel("");
-      toast.success("身份 ID 已添加");
+      toast.success("好友 ID 已添加");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "添加身份 ID 失败");
+      toast.error(error instanceof Error ? error.message : "添加好友 ID 失败");
     } finally {
       setIsSaving(false);
     }
@@ -113,7 +113,7 @@ export function RegistrationIdentitiesCard() {
       const data = await updateRegistrationIdentity(item.id, { enabled: !item.enabled });
       setItems(data.items || []);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "更新身份 ID 失败");
+      toast.error(error instanceof Error ? error.message : "更新好友 ID 失败");
     } finally {
       setBusyId(null);
     }
@@ -124,9 +124,9 @@ export function RegistrationIdentitiesCard() {
     try {
       const data = await deleteRegistrationIdentity(item.id);
       setItems(data.items || []);
-      toast.success("身份 ID 已删除");
+      toast.success("好友 ID 已删除");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "删除身份 ID 失败");
+      toast.error(error instanceof Error ? error.message : "删除好友 ID 失败");
     } finally {
       setBusyId(null);
     }
@@ -145,7 +145,7 @@ export function RegistrationIdentitiesCard() {
       setImportStats(data.stats);
       toast.success(`导入完成：新增 ${data.stats.added}，跳过 ${data.stats.duplicates}`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "导入身份 ID JSON 失败");
+      toast.error(error instanceof Error ? error.message : "导入好友 ID JSON 失败");
     } finally {
       setIsImporting(false);
     }
@@ -154,8 +154,8 @@ export function RegistrationIdentitiesCard() {
   return (
     <SettingsCard
       icon={ShieldCheck}
-      title="注册身份 ID"
-      description="维护本地注册白名单，原始 ID 仅管理员可见。"
+      title="注册好友 ID"
+      description="维护本地注册白名单，原始好友 ID 仅管理员可见。"
       tone="slate"
       action={
         <div className="flex flex-wrap justify-end gap-2">
@@ -185,7 +185,7 @@ export function RegistrationIdentitiesCard() {
     >
       <div className="flex flex-col gap-4">
         <SettingsNotice>
-          用户注册时必须输入未使用的身份 ID。注册成功后 ID 会绑定用户名；即使账号被删除，也不会释放该 ID。
+          用户注册时必须输入未使用的好友 ID。注册成功后 ID 会绑定用户名；即使账号被删除，也不会释放该 ID。
         </SettingsNotice>
 
         {importStats ? (
@@ -200,7 +200,7 @@ export function RegistrationIdentitiesCard() {
 
         <div className="grid gap-3 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)_auto]">
           <Field className="gap-1.5">
-            <FieldLabel htmlFor="registration-identity-id">身份 ID</FieldLabel>
+            <FieldLabel htmlFor="registration-identity-id">好友 ID</FieldLabel>
             <Input
               id="registration-identity-id"
               value={identityId}
@@ -238,7 +238,7 @@ export function RegistrationIdentitiesCard() {
             加载中
           </div>
         ) : filteredItems.length === 0 ? (
-          <SettingsEmptyState icon={ShieldCheck} title="暂无身份 ID" description="添加后，用户才能通过白名单完成本地注册。" />
+          <SettingsEmptyState icon={ShieldCheck} title="暂无好友 ID" description="添加后，用户才能通过白名单完成本地注册。" />
         ) : (
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">

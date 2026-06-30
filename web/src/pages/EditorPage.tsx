@@ -40,6 +40,7 @@ import {
   saveRetouchHistorySession,
   type RetouchHistorySession,
 } from "@/store/retouch-history";
+import type { StoredAuthSession } from "@/store/auth";
 
 type PageStatus = "empty" | "editing" | "submitting" | "polling" | "success_split" | "error";
 type SplitSelection = "source" | "result" | null;
@@ -305,7 +306,11 @@ function buildRetouchSession(
     draftPrompt,
   };
 }
-export default function EditorPage() {
+type EditorPageProps = {
+  session: StoredAuthSession;
+};
+
+export default function EditorPage({ session }: EditorPageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const retouchCanvasRef = useRef<RetouchCanvasHandle | null>(null);
   const generationRunIdRef = useRef(0);
@@ -350,6 +355,8 @@ export default function EditorPage() {
   const rootNode = rootNodeId ? nodesById[rootNodeId] ?? null : null;
   const isGenerating = pageStatus === "submitting" || pageStatus === "polling";
   const isError = pageStatus === "error";
+  const canUseMockRequestMode = session.role === "admin";
+  const effectiveRequestMode: RetouchRequestMode = canUseMockRequestMode ? requestMode : "api";
   const sourceImage = currentNode?.baseImage;
   const resultImage = currentNode?.generatedImage;
   const displaySourceImage = (isGenerating || isError) && pendingSourceImage ? pendingSourceImage : sourceImage;
@@ -387,12 +394,15 @@ export default function EditorPage() {
   }, [historySessions]);
 
   useEffect(() => {
+    if (!canUseMockRequestMode) {
+      return;
+    }
     try {
       window.localStorage.setItem(RETOUCH_REQUEST_MODE_STORAGE_KEY, requestMode);
     } catch {
       // Local storage can be unavailable in private browsing contexts.
     }
-  }, [requestMode]);
+  }, [canUseMockRequestMode, requestMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -699,7 +709,7 @@ export default function EditorPage() {
     };
 
     try {
-      if (requestMode === "mock") {
+      if (effectiveRequestMode === "mock") {
         await sleep(650);
         if (generationRunIdRef.current !== runId) {
           return;
@@ -774,7 +784,7 @@ export default function EditorPage() {
       setPageStatus("error");
       setGeneratingStartedAt(null);
     }
-  }, [addNode, currentNode, editableImage, hasCanvasMarks, isGenerating, markerColor, pageStatus, persistActiveSession, prompt, requestMode, sourceFilesByAssetId, splitSelection]);
+  }, [addNode, currentNode, editableImage, effectiveRequestMode, hasCanvasMarks, isGenerating, markerColor, pageStatus, persistActiveSession, prompt, sourceFilesByAssetId, splitSelection]);
   const renderImageBadge = (image: ImageTreeAsset, variant: "light" | "dark") => (
     <figcaption
       className={[
@@ -906,7 +916,7 @@ export default function EditorPage() {
         <button
           type="button"
           onClick={() => setIsHistoryOpen(true)}
-          className="absolute right-6 top-4 z-50 inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
+          className="fixed left-3 top-[86px] z-50 inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white sm:left-5 lg:left-6"
         >
           <History className="size-4" />
           历史记录
@@ -931,16 +941,53 @@ export default function EditorPage() {
       >
         {currentNode ? (
           <div className="relative flex size-full min-h-0 items-center justify-center [perspective:1600px]">
-            <div className="absolute left-6 top-0 z-50 flex max-w-[52vw] items-center gap-2 overflow-hidden rounded-full bg-white/78 px-2 py-1 shadow-sm ring-1 ring-slate-950/10 backdrop-blur">
-              {imageList.map((image) => (
-                <span
-                  key={image.id}
-                  className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold tabular-nums text-white"
+            {createPortal(
+              <aside className="fixed left-3 top-[86px] z-50 flex w-[172px] flex-col gap-2 rounded-[24px] bg-white/82 p-2 shadow-[0_18px_54px_rgba(15,23,42,0.12)] ring-1 ring-slate-950/10 backdrop-blur-xl sm:left-5 lg:left-6" aria-label="Retouch 工具栏">
+                <button
+                  type="button"
+                  onClick={() => setIsHistoryOpen(true)}
+                  className="inline-flex h-10 w-full items-center justify-between gap-2 rounded-full bg-white px-3 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 transition hover:bg-slate-50"
                 >
-                  {getImageLabel(image)}
-                </span>
-              ))}
-            </div>
+                  <span className="inline-flex items-center gap-2">
+                    <History className="size-4" />
+                    历史
+                  </span>
+                  <span className="rounded-full bg-slate-950 px-2 py-0.5 text-[11px] font-semibold text-white">{historySessions.length}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="inline-flex h-10 w-full items-center gap-2 rounded-full bg-white px-3 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 transition hover:bg-slate-50"
+                >
+                  <ImagePlus className="size-4" />
+                  更换图片
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveImage()}
+                  className="inline-flex h-10 w-full items-center gap-2 rounded-full bg-slate-950 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
+                >
+                  <Trash2 className="size-4" />
+                  移除图片
+                </button>
+                {canUseMockRequestMode ? (
+                  <div className="border-t border-slate-200/80 pt-2">
+                    {renderRequestModeToggle()}
+                  </div>
+                ) : null}
+                <div className="flex max-h-[92px] flex-wrap gap-1 overflow-y-auto border-t border-slate-200/80 pt-2">
+                  {imageList.map((image) => (
+                    <span
+                      key={image.id}
+                      className="rounded-full bg-slate-950 px-2.5 py-1 text-xs font-semibold tabular-nums text-white"
+                    >
+                      {getImageLabel(image)}
+                    </span>
+                  ))}
+                </div>
+              </aside>,
+              document.body,
+            )}
             {rootNode ? createPortal(
               <aside className="fixed right-3 top-[86px] z-50 w-[280px] rounded-[24px] bg-white/82 p-3 shadow-[0_24px_80px_rgba(15,23,42,0.16)] ring-1 ring-slate-950/10 backdrop-blur-xl sm:right-5 lg:right-6" aria-label="版本树">
                 <div className="mb-3 flex items-center justify-between gap-3 px-1">
@@ -958,34 +1005,6 @@ export default function EditorPage() {
               </aside>,
               document.body,
             ) : null}
-            <div className="absolute right-6 top-0 z-50 flex items-center gap-2">
-              {renderRequestModeToggle()}
-              <button
-                type="button"
-                onClick={() => setIsHistoryOpen(true)}
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
-              >
-                <History className="size-4" />
-                历史记录
-                <span className="rounded-full bg-slate-950 px-2 py-0.5 text-[11px] font-semibold text-white">{historySessions.length}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-white/88 px-4 text-sm font-medium text-slate-700 shadow-sm ring-1 ring-slate-950/10 backdrop-blur transition hover:bg-white"
-              >
-                <ImagePlus className="size-4" />
-                更换图片
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleRemoveImage()}
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-950/88 px-4 text-sm font-medium text-white shadow-sm backdrop-blur transition hover:bg-slate-800"
-              >
-                <Trash2 className="size-4" />
-                移除
-              </button>
-            </div>
             <AnimatePresence initial={false}>
               {ancestors.map((node, index) => {
                 const distance = ancestors.length - index;

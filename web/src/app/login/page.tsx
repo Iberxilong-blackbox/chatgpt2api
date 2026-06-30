@@ -89,7 +89,7 @@ export default function LoginPage() {
       return;
     }
     if (isRegisterMode && !normalizedIdentityId) {
-      toast.error("请输入身份 ID");
+      toast.error("请输入好友 ID");
       return;
     }
 
@@ -237,8 +237,8 @@ export default function LoginPage() {
                 <div className="min-h-0 overflow-visible">
                   <div className="flex flex-col gap-2">
                     <label htmlFor="login-identity-id" className="block text-sm font-semibold text-[#222222] dark:text-white/88">
-                      身份 ID
-                    </label>
+                       好友 ID
+                     </label>
                     <div className="relative">
                       <ShieldCheck className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-[#8e8e93] dark:text-white/42" />
                       <Input
@@ -248,7 +248,7 @@ export default function LoginPage() {
                         tabIndex={isRegisterMode ? undefined : -1}
                         value={identityId}
                         onChange={(event) => setIdentityId(event.target.value)}
-                        placeholder="请输入管理员提供的 ID"
+                        placeholder="请输入好友 ID"
                         className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
                       />
                     </div>
