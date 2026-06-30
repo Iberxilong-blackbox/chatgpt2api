@@ -193,15 +193,22 @@ chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/${BINARY}"
 chmod 755 "${INSTALL_DIR}/${BINARY}"
 log_info "二进制文件已更新"
 
-# 5. 同步运行时数据文件
+# 5. 同步 .env 配置文件
+log_info "更新 .env 配置文件..."
+cp .env "${INSTALL_DIR}/.env"
+chown "${APP_NAME}:${APP_NAME}" "${INSTALL_DIR}/.env"
+chmod 640 "${INSTALL_DIR}/.env"
+log_info ".env 已更新"
+
+# 6. 同步运行时数据文件
 sync_warming_prompts
 
-# 6. 启动服务
+# 7. 启动服务
 log_info "启动服务 ${SERVICE_NAME}..."
 systemctl start "$SERVICE_NAME"
 log_info "服务已启动"
 
-# 7. 检查状态
+# 8. 检查状态
 sleep 1
 if systemctl is-active --quiet "$SERVICE_NAME"; then
     log_info "服务运行正常"
