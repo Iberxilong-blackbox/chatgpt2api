@@ -89,7 +89,7 @@ export function RegistrationIdentitiesCard() {
   const handleAdd = async () => {
     const nextIdentityId = identityId.trim();
     if (!nextIdentityId) {
-      toast.error("请输入好友 ID");
+      toast.error("我亲爱的好友，请输入你的微信号");
       return;
     }
     setIsSaving(true);

@@ -335,6 +335,7 @@ export default function EditorPage({ session }: EditorPageProps) {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: "one"; id: string } | { type: "all" } | null>(null);
+  const [clearWorkspaceConfirmOpen, setClearWorkspaceConfirmOpen] = useState(false);
   const addRootNode = useImageTreeStore((state) => state.addRootNode);
   const addNode = useImageTreeStore((state) => state.addNode);
   const navigateNode = useImageTreeStore((state) => state.navigateNode);
@@ -501,24 +502,6 @@ export default function EditorPage({ session }: EditorPageProps) {
     }
   }, [addRootNode, currentNode, persistActiveSession, prompt]);
 
-  const handleRemoveImage = useCallback(async () => {
-    await persistActiveSession(prompt);
-    generationRunIdRef.current += 1;
-    activeTaskIdRef.current = null;
-    resetTree();
-    setActiveSessionId(null);
-    setSourceFilesByAssetId({});
-    setPrompt("");
-    setHasCanvasMarks(false);
-    setMarkerColor(null);
-    setPendingSourceImage(null);
-    setPendingMaskData(undefined);
-    setErrorMessage("");
-    setSplitSelection(null);
-    setPageStatus("empty");
-    setGeneratingStartedAt(null);
-  }, [persistActiveSession, prompt, resetTree]);
-
   const handleSelectSplitImage = useCallback((selection: Exclude<SplitSelection, null>) => {
     setSplitSelection(selection);
     setHasCanvasMarks(false);
@@ -589,6 +572,23 @@ export default function EditorPage({ session }: EditorPageProps) {
     setPageStatus("empty");
     setGeneratingStartedAt(null);
   }, [resetTree]);
+
+  const handleClearWorkspace = useCallback(async () => {
+    const taskId = activeTaskIdRef.current;
+    await persistActiveSession(prompt);
+    resetWorkspace();
+    setClearWorkspaceConfirmOpen(false);
+
+    if (!taskId) {
+      return;
+    }
+
+    try {
+      await cancelCreationTask(taskId);
+    } catch {
+      // Best-effort cancellation; the local workspace has already been cleared.
+    }
+  }, [persistActiveSession, prompt, resetWorkspace]);
 
   const handleOpenHistorySession = useCallback(async (sessionId: string) => {
     if (isGenerating) {
@@ -964,11 +964,11 @@ export default function EditorPage({ session }: EditorPageProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => void handleRemoveImage()}
+                  onClick={() => setClearWorkspaceConfirmOpen(true)}
                   className="inline-flex h-10 w-full items-center gap-2 rounded-full bg-slate-950 px-3 text-sm font-medium text-white shadow-sm transition hover:bg-slate-800"
                 >
                   <Trash2 className="size-4" />
-                  移除图片
+                  清空工作区
                 </button>
                 {canUseMockRequestMode ? (
                   <div className="border-t border-slate-200/80 pt-2">
@@ -1313,6 +1313,32 @@ export default function EditorPage({ session }: EditorPageProps) {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={clearWorkspaceConfirmOpen} onOpenChange={setClearWorkspaceConfirmOpen}>
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>清空当前工作区？</DialogTitle>
+            <DialogDescription className="text-sm leading-6">
+              这会关闭当前画布和版本树，并回到上传图片界面。如当前项目已成功保存到本浏览器的 Retouch 历史中，你可以稍后从历史重新打开。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setClearWorkspaceConfirmOpen(false)}
+              className="inline-flex h-10 items-center justify-center rounded-full bg-white px-4 text-sm font-medium text-slate-700 ring-1 ring-slate-200 transition hover:bg-slate-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleClearWorkspace()}
+              className="inline-flex h-10 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-medium text-white transition hover:bg-slate-800"
+            >
+              确认清空
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {deleteConfirm ? (
         <Dialog open onOpenChange={(open) => (!open ? setDeleteConfirm(null) : null)}>
           <DialogContent showCloseButton={false} className="rounded-2xl p-6">

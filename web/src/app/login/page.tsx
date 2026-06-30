@@ -248,7 +248,7 @@ export default function LoginPage() {
                         tabIndex={isRegisterMode ? undefined : -1}
                         value={identityId}
                         onChange={(event) => setIdentityId(event.target.value)}
-                        placeholder="请输入好友 ID"
+                        placeholder="我亲爱的好友，请输入你的微信号"
                         className="h-12 rounded-[16px] bg-white/90 pl-10 shadow-[0_6px_18px_rgba(24,40,72,0.05)] dark:border-white/12 dark:bg-white/8 dark:text-white dark:placeholder:text-white/38 dark:shadow-[0_12px_26px_rgba(2,6,23,0.24)]"
                       />
                     </div>
