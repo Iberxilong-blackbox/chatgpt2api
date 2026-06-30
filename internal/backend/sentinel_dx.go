@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -43,7 +42,7 @@ func logSOEvent(event string, detail map[string]any) {
 // collectorDX is the so.collector_dx field from the prepare response.
 func startSOCollector(requirementsToken, collectorDX, snapshotDX string) *sosession {
 	if collectorDX == "" {
-		log.Printf("sentinel_dx: startSOCollector — collector_dx is empty, SO disabled")
+		sentinelLog("sentinel_dx: startSOCollector — collector_dx is empty, SO disabled")
 		return nil
 	}
 	s := &sosession{
@@ -52,11 +51,11 @@ func startSOCollector(requirementsToken, collectorDX, snapshotDX string) *sosess
 	}
 	done := s.session.Start()
 	s.started = true
-	log.Printf("sentinel_dx: SO collector started — collector_dx len=%d, snapshot_dx len=%d", len(collectorDX), len(snapshotDX))
+	sentinelLog("sentinel_dx: SO collector started — collector_dx len=%d, snapshot_dx len=%d", len(collectorDX), len(snapshotDX))
 	// Fire-and-forget: don't block on done channel, but log completion
 	go func() {
 		<-done
-		log.Printf("sentinel_dx: SO collector finished")
+		sentinelLog("sentinel_dx: SO collector finished")
 	}()
 	return s
 }
@@ -74,15 +73,15 @@ func (s *sosession) buildSOToken(deviceID string) string {
 	}
 	soResult, err := s.session.Snapshot(s.snapshotDX)
 	if err != nil {
-		log.Printf("sentinel_dx: SO snapshot FAILED — %v", err)
+		sentinelLog("sentinel_dx: SO snapshot FAILED — %v", err)
 		logSOEvent("so_snapshot_failed", map[string]any{"error": err.Error()})
 		return ""
 	}
 	if soResult == "" {
-		log.Printf("sentinel_dx: SO snapshot returned empty result")
+		sentinelLog("sentinel_dx: SO snapshot returned empty result")
 		return ""
 	}
-	log.Printf("sentinel_dx: SO snapshot OK — result len=%d", len(soResult))
+	sentinelLog("sentinel_dx: SO snapshot OK — result len=%d", len(soResult))
 	// Store decoded snapshot result in event log for audit; console only shows length.
 	if decoded, decErr := base64.StdEncoding.DecodeString(soResult); decErr == nil {
 		logSOEvent("so_snapshot_ok", map[string]any{"result_len": len(soResult), "decoded_hex": fmt.Sprintf("%x", decoded)})
@@ -90,10 +89,10 @@ func (s *sosession) buildSOToken(deviceID string) string {
 
 	soToken, err := so.BuildToken(soResult, s.chatToken, deviceID, "chatgpt")
 	if err != nil {
-		log.Printf("sentinel_dx: SO BuildToken FAILED — %v", err)
+		sentinelLog("sentinel_dx: SO BuildToken FAILED — %v", err)
 		return ""
 	}
-	log.Printf("sentinel_dx: SO token built — len=%d", len(soToken))
+	sentinelLog("sentinel_dx: SO token built — len=%d", len(soToken))
 	s.cachedSOToken = soToken
 	return soToken
 }

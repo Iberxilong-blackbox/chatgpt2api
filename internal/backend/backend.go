@@ -37,6 +37,18 @@ const (
 	browserImpersonationProfile   = "chrome145"
 )
 
+var sentinelDebugEnabled = false
+
+func SetSentinelDebugEnabled(enabled bool) {
+	sentinelDebugEnabled = enabled
+}
+
+func sentinelLog(format string, args ...any) {
+	if sentinelDebugEnabled {
+		log.Printf(format, args...)
+	}
+}
+
 var browserfpOnce sync.Once
 
 type AccountLookup interface {
@@ -444,12 +456,12 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 			reqData, _ := io.ReadAll(reqResp.Body)
 			reqResp.Body.Close()
 			if reqResp.StatusCode >= 200 && reqResp.StatusCode < 300 {
-				log.Printf("sentinel: /req OK — status=%d", reqResp.StatusCode)
+				sentinelLog("sentinel: /req OK — status=%d", reqResp.StatusCode)
 			} else {
-				log.Printf("sentinel: /req returned %d — continuing to prepare (response: %s)", reqResp.StatusCode, summarizeUpstreamErrorBody(reqData))
+				sentinelLog("sentinel: /req returned %d — continuing to prepare (response: %s)", reqResp.StatusCode, summarizeUpstreamErrorBody(reqData))
 			}
 		} else {
-			log.Printf("sentinel: /req transport error — %v (continuing to prepare)", reqErr)
+			sentinelLog("sentinel: /req transport error — %v (continuing to prepare)", reqErr)
 		}
 	}
 
@@ -503,7 +515,7 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 	token := util.Clean(finalizePayload2["token"])
 	soToken := util.Clean(finalizePayload2["so_token"])
 
-	log.Printf("sentinel: finalize response — status=%d, token_present=%v, so_token_present=%v",
+	sentinelLog("sentinel: finalize response — status=%d, token_present=%v, so_token_present=%v",
 		resp2.StatusCode, token != "", soToken != "")
 
 	if soToken != "" {
@@ -539,12 +551,12 @@ func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, err
 			pingResp, pingErr := c.postJSON(context.Background(), pingPath, map[string]any{}, pingHeaders, false)
 			if pingErr == nil {
 				pingResp.Body.Close()
-				log.Printf("sentinel: /ping — status=%d", pingResp.StatusCode)
+				sentinelLog("sentinel: /ping — status=%d", pingResp.StatusCode)
 				if pingResp.StatusCode >= 200 && pingResp.StatusCode < 300 {
 					logSOEvent("sentinel_ping_ok", map[string]any{"status": pingResp.StatusCode})
 				}
 			} else {
-				log.Printf("sentinel: /ping transport error — %v", pingErr)
+				sentinelLog("sentinel: /ping transport error — %v", pingErr)
 			}
 		}()
 	}
@@ -562,11 +574,11 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	if util.ToBool(proof["required"]) {
 		token, powErr := buildProofToken(util.Clean(proof["seed"]), util.Clean(proof["difficulty"]), c.userAgent)
 		if powErr != nil {
-			log.Printf("sentinel: PoW FAILED — %v", powErr)
+			sentinelLog("sentinel: PoW FAILED — %v", powErr)
 			return "", "", powErr
 		}
 		proofToken = token
-		log.Printf("sentinel: PoW OK — token len=%d", len(proofToken))
+		sentinelLog("sentinel: PoW OK — token len=%d", len(proofToken))
 	}
 
 	// Turnstile: use aurora full 35-opcode VM with browser window mock.
@@ -574,7 +586,7 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	if util.ToBool(turnstile["required"]) && util.Clean(turnstile["dx"]) != "" {
 		turnstileToken = solveTurnstileToken(util.Clean(turnstile["dx"]), sourceP)
 		if turnstileToken == "" {
-			log.Printf("sentinel: Turnstile FAILED — dx len=%d", len(util.Clean(turnstile["dx"])))
+			sentinelLog("sentinel: Turnstile FAILED — dx len=%d", len(util.Clean(turnstile["dx"])))
 		}
 	}
 
@@ -583,7 +595,7 @@ func (c *Client) buildRequirements(data map[string]any, sourceP string) (proofTo
 	if util.ToBool(soData["required"]) {
 		collectorDX := util.Clean(soData["collector_dx"])
 		snapshotDX := util.Clean(soData["snapshot_dx"])
-		log.Printf("sentinel: SO — required=true, collector_dx_present=%v, snapshot_dx_present=%v",
+		sentinelLog("sentinel: SO — required=true, collector_dx_present=%v, snapshot_dx_present=%v",
 			collectorDX != "", snapshotDX != "")
 		if collectorDX != "" {
 			c.soSess = startSOCollector(sourceP, collectorDX, snapshotDX)

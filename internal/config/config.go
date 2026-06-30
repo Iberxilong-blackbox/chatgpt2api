@@ -53,6 +53,7 @@ var settingEnvKeys = map[string]string{
 	"login_page_image_zoom":             "CHATGPT2API_LOGIN_PAGE_IMAGE_ZOOM",
 	"login_page_image_position_x":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_X",
 	"login_page_image_position_y":       "CHATGPT2API_LOGIN_PAGE_IMAGE_POSITION_Y",
+	"sentinel_debug":                    "CHATGPT2API_SENTINEL_DEBUG",
 }
 
 var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -178,6 +179,10 @@ func (s *Store) AdminPassword() string {
 
 func (s *Store) RegistrationEnabled() bool {
 	return util.ToBool(s.settingValue("registration_enabled", false))
+}
+
+func (s *Store) SentinelDebugEnabled() bool {
+	return util.ToBool(s.settingValue("sentinel_debug", false))
 }
 
 func (s *Store) DailyRegistrationLimit() int {

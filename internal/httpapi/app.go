@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"chatgpt2api/internal/backend"
 	"chatgpt2api/internal/config"
 	"chatgpt2api/internal/protocol"
 	"chatgpt2api/internal/service"
@@ -75,6 +76,7 @@ func NewApp() (*App, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	backend.SetSentinelDebugEnabled(cfg.SentinelDebugEnabled())
 	logs := service.NewLogService(storageBackend)
 	logger, err := service.NewLogger(cfg.DataDir, cfg.LogLevels)
 	if err != nil {
