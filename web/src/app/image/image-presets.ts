@@ -11,11 +11,32 @@ export type ImagePromptPreset = {
 export const IMAGE_PROMPT_PRESETS: ImagePromptPreset[] = [
   {
     id: "stellar-poster",
-    title: "轮廓宇宙海报",
-    prompt:
-      "请根据【主题：崩坏星穹铁道，角色卡芙卡】自动生成一张高审美的“轮廓宇宙 / 收藏版叙事海报”风格作品。不要将画面局限于固定器物或常见容器，不要优先默认瓶子、沙漏、玻璃罩、怀表之类的常规载体，而是由 AI 根据主题自行判断并选择一个最契合、最有象征意义、轮廓最强、最适合承载完整叙事世界的主轮廓载体。这个主轮廓可以是器物、建筑、门、塔、拱门、穹顶、楼梯井、长廊、雕像、侧脸、眼睛、手掌、头骨、羽翼、面具、镜面、王座、圆环、裂缝、光幕、阴影、几何结构、空间切面、舞台框景、抽象符号或其他更有创意与主题代表性的视觉轮廓，要求合理布局。优先选择最能放大主题气质、最能形成强烈视觉记忆点、最能体现史诗感、神秘感、诗意感或设计感的轮廓，而不是最安全、最普通、最常见的容器。画面的核心不是简单把世界装进某个物体里，而是让完整的主题世界自然生长在这个主轮廓之中、之内、之上、之边界里或与其结构融为一体，形成一种“主题宇宙依附于一个象征性轮廓展开”的高级叙事效果。主轮廓必须清晰、优雅、有辨识度，并在整体构图中占据核心地位。轮廓内部或边界中需要自动生成与主题强绑定的完整叙事世界，内容应当丰富、饱满、层次清晰，包括最能代表主题的标志性场景、核心建筑或空间结构、象征符号与隐喻元素、角色关系或文明痕迹、远景中景近景的空间递进、具有命运感和情绪张力的氛围层次，以及门、台阶、桥梁、水面、烟雾、路径、光源、遗迹、机械结构、自然景观、抽象形态、生物或道具等叙事细节。所有元素必须统一、自然、有主次、有层级地融合，像一个完整世界真实孕育在这个轮廓结构之中，而不是简单拼贴、裁切填充、素材堆叠或模板化背景。整体构图需要具有强烈的收藏版海报气质与高级设计感，大结构稳定，主轮廓强烈明确，内部世界具有纵深、秩序和呼吸感，细节丰富但不拥挤，内容丰满但不杂乱，可以适度加入小比例人物剪影、远处建筑、光柱、门洞、桥、阶梯、回廊、倒影、天光或远景结构来增强尺度感、故事感与史诗感。整体画面要安静、宏大、凝练、富有余味，不要平均铺满，不要廉价热闹，不要无重点堆砌。风格融合收藏版电影海报构图、高级叙事型视觉设计、梦幻水彩质感与纸张印刷品气质，强调纸张颗粒感、边缘飞白、水彩刷痕、轻微晕染、空气透视、柔和雾化、局部体积光、光雾穿透、大面积留白与克制版式，让画面看起来像设计师完成的高端收藏版视觉作品，而不是普通 AI 跑图。整体气质要高级、诗意、宏大、神圣、怀旧、安静、具有传说感和叙事感。色彩由 AI 根据主题自动判断并匹配最合适的高级配色方案，但必须保持统一、克制、耐看、低饱和、高级，不要杂乱高饱和，不要廉价霓虹感，不要塑料数码感。配色可以围绕黑金灰、冷蓝灰、雾白灰、褐红米白、暗铜、旧纸色、深海蓝、暮色紫、银灰等体系自由变化，但必须始终服务主题，并保持海报级审美与整体和谐。最终要求：第一眼有强烈的主题识别度和轮廓记忆点，第二眼有完整丰富的叙事世界，第三眼仍有细节和余味。轮廓选择必须具有创意和主题匹配度，尽量避免重复、保守、常见的容器套路，优先选择更有象征性、更有空间感、更有设计潜力的轮廓形式。不要普通背景拼接，不要生硬裁切，不要模板化奇幻素材，不要游戏宣传图感，不要过度卡通化，不要过度写实导致失去艺术感，不要形式大于内容。如果合适，可以自然加入低调克制的标题、编号、签名或落款，让它更像收藏版海报设计的一部分，但不要喧宾夺主。",
-    hint: "高审美叙事海报、角色宇宙主题视觉、收藏版概念海报。",
-    imageSrc: "/presets/stellar-poster.webp",
+    title: "戏剧光影二次元",
+    prompt:`CRITICAL DIRECTIVE: Create a masterpiece cinematic illustration fusing 1980s/1990s retro Japanese anime hand-drawn aesthetics with a high-fidelity 3D sculptural Unreal Engine render. The final image must project a powerful, oppressive atmosphere with an epic, tragic sense of destiny.
+
+1. VISUAL STYLE & ART DIRECTION (新复古三维雕塑感动漫风格)
+- Aesthetic Fusion: A unique neo-retro 3D sculptural style with high-contrast cel-shading, featuring strong, dramatic, and exaggerated thick black ink outlines contouring the model.
+- Texture & Ambience: Covered in heavy analog film grain and decayed, mottled, and weathered textures. Blended with a hazy slow-shutter motion blur and a dreamcore-like layered depth of field.
+
+2. COMPOSITION, ANGLE & FORESHORTENING (构图与动态透视)
+- Camera & Perspective: Dynamic full-body shot, captured on an ultra-wide-angle lens from an extreme low angle, creating a powerful, forced perspective and high visual tension.
+- Focal Depth: A compressed perspective that brings the subject close to the lens for an intense, close-up-like facial impact, while still revealing the full-body posture against a blurred, deeply layered atmospheric background.
+
+3. SUBJECT & EMOTIONAL INTENSITY (主体与悲壮氛围)
+- Subject: [SUBJECT, e.g., A battle-worn mecha warrior with broken mechanical wings / An ancient dark sorcerer holding a glowing cracked relic].
+- Mood: Exquisite maximalist details, sharp structural lines, natural shadow gradients, flowing dynamic effects, and floating dispersed dust particles that evoke a deep, tragic sense of destiny and primal dread.
+
+4. LIGHTING & FLUID ART OF SHADOW (戏剧性光影与流体艺术)
+- Chiaroscuro Blueprint: High-contrast cinematic dark lighting (Rembrandt lighting) with deep, dramatic shadows.
+- Glow & Flare: Blends overexposed, intense lens glare and soft diffused volumetric lights with sharp, razor-thin rim-lights that outline the subject.
+- Intertwined Effect: The light and shadow must feel alive, creating a fluid art effect of chaotic, intertwined luminous paths drifting across the frame.
+
+5. TECHNICAL PARAMETERS & NEGATIVE PROMPT
+Negative: (modern generic CGI look, flat 2D vector art, safe corporate graphics, bright cheerful lighting, flawless plastic skin, smooth clean textures, generic anime style).
+
+--ar 3:4 --style raw --v 6.0`,
+    hint: "**1990年代的2D日本复古动漫+虚幻引擎渲染**",
+    imageSrc: "/presets/UE-2.webp",
     count: 1,
     size: "9:16",
   },
