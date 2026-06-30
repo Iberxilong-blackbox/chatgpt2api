@@ -811,6 +811,9 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 		if strings.TrimSpace(prompt) == "" {
 			prompt = request.Prompt
 		}
+		inputImages := responsesInputImages(request.Images)
+		inputImageMask := responsesInputImagePtr(request.InputImageMask)
+		e.logResponsesImageMaskDebug(request, inputImages, inputImageMask)
 		events, upstreamErr := client.StreamResponsesImage(ctx, backend.ResponsesImageRequest{
 			Prompt:            prompt,
 			Model:             request.Model,
@@ -822,8 +825,8 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 			OutputFormat:      request.OutputFormat,
 			OutputCompression: request.OutputCompression,
 			PartialImages:     request.PartialImages,
-			InputImages:       responsesInputImages(request.Images),
-			InputImageMask:    responsesInputImagePtr(request.InputImageMask),
+			InputImages:       inputImages,
+			InputImageMask:    inputImageMask,
 			ConversationID:    request.UpstreamConversationID,
 			ParentMessageID:   request.UpstreamParentMessageID,
 		})
@@ -890,6 +893,41 @@ func (e *Engine) StreamResponsesImageOutputs(ctx context.Context, client *backen
 	return out, errCh
 }
 
+func (e *Engine) logResponsesImageMaskDebug(request ConversationRequest, inputImages []backend.ResponsesInputImage, inputImageMask *backend.ResponsesInputImage) {
+	if e == nil || e.Logger == nil {
+		return
+	}
+	mask := strings.TrimSpace(request.InputImageMask)
+	maskBytes := 0
+	maskContentType := ""
+	if inputImageMask != nil {
+		maskBytes = len(inputImageMask.Data)
+		maskContentType = inputImageMask.ContentType
+	}
+	e.Logger.Info("responses image upstream request prepared",
+		"input_image_count", len(inputImages),
+		"mask_present", mask != "",
+		"mask_data_url", strings.HasPrefix(mask, "data:image/"),
+		"mask_length", len(mask),
+		"mask_prefix", safeLogPrefix(mask, 32),
+		"mask_decoded", inputImageMask != nil,
+		"mask_bytes", maskBytes,
+		"mask_content_type", maskContentType,
+		"prompt_wrapped", strings.Contains(request.Prompt, "仅对标注区域进行编辑"),
+		"model", request.Model,
+	)
+}
+
+func safeLogPrefix(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
 func imageResultOutputOptions(request ConversationRequest, event backend.ResponsesImageEvent) ImageOutputOptions {
 	if strings.TrimSpace(request.Model) == util.ImageModelCodex {
 		return ImageOutputOptions{Format: firstNonEmpty(event.OutputFormat, request.OutputFormat), TrustUpstreamFormat: true}

@@ -245,6 +245,7 @@ func (a *App) handleImageEdits(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusBadRequest, "image file is required")
 		return
 	}
+	a.logImageMaskDebug("image edit multipart received", body, len(images))
 	body["owner_id"] = identityScope(identity)
 	body["owner_name"] = identityDisplayName(identity)
 	body["base_url"] = a.resolveImageBaseURL(r)
@@ -1364,6 +1365,33 @@ func readJSONMap(r *http.Request) (map[string]any, error) {
 	return body, err
 }
 
+func (a *App) logImageMaskDebug(message string, body map[string]any, imageCount int) {
+	if a == nil || a.logger == nil {
+		return
+	}
+	mask := strings.TrimSpace(util.Clean(body["input_image_mask"]))
+	prompt := strings.TrimSpace(util.Clean(body["prompt"]))
+	a.logger.Info(message,
+		"image_count", imageCount,
+		"mask_present", mask != "",
+		"mask_data_url", strings.HasPrefix(mask, "data:image/"),
+		"mask_length", len(mask),
+		"mask_prefix", safeLogPrefix(mask, 32),
+		"prompt_wrapped", strings.Contains(prompt, "仅对标注区域进行编辑"),
+		"prompt_length", len(prompt),
+	)
+}
+
+func safeLogPrefix(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
 func readMultipartImageBody(r *http.Request) (map[string]any, []protocol.UploadedImage, error) {
 	if err := r.ParseMultipartForm(128 << 20); err != nil {
 		return nil, nil, err
@@ -1885,6 +1913,9 @@ func (a *App) imageOwnerDisplayNames() map[string]string {
 func (a *App) runLoggedImageTask(ctx context.Context, identity service.Identity, payload map[string]any, endpoint, summary string, run func(context.Context, map[string]any) (map[string]any, error)) (map[string]any, error) {
 	start := time.Now()
 	requestCapture := payloadAuditCapture(payload)
+	if endpoint == "/api/creation-tasks/image-edits" {
+		a.logImageMaskDebug("creation image edit task running", payload, len(util.AsMapSlice(payload["images"])))
+	}
 	payload["owner_id"] = identityScope(identity)
 	payload["owner_name"] = identityDisplayName(identity)
 	a.attachFallbackReferenceImage(identity, payload)
@@ -1917,6 +1948,7 @@ func (a *App) attachCreationTaskLimiter(body map[string]any, identity service.Id
 func (a *App) runLoggedChatTask(ctx context.Context, identity service.Identity, payload map[string]any) (map[string]any, error) {
 	start := time.Now()
 	requestCapture := payloadAuditCapture(payload)
+
 	payload["owner_id"] = identityScope(identity)
 	payload["owner_name"] = identityDisplayName(identity)
 	payload["stream"] = false
