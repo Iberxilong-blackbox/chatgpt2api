@@ -19,6 +19,7 @@
 /out/
 
 # production
+web/public/presets/editorial-fashion.webp
 /build
 
 # misc

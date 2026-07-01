@@ -48,6 +48,25 @@ func TestReservoirVerifiedQuotaAccountParticipatesInTextAndImagePools(t *testing
 	}
 }
 
+func TestReservoirVerifiedAtUsesLatestEvidence(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccounts([]string{"recent-success-token"})
+	now := time.Now()
+	accounts.UpdateAccount("recent-success-token", map[string]any{
+		"status":           "正常",
+		"quota":            8,
+		"quota_checked_at": now.Add(-8 * time.Hour).Format(time.RFC3339),
+		"last_success_at":  now.Add(-time.Hour).Format(time.RFC3339),
+	})
+
+	snapshot := accounts.ReservoirSnapshot()
+	if got := snapshot.CandidateCounts[ReservoirLayerAvailableWithQuota]; got != 1 {
+		t.Fatalf("available_with_quota count = %d, want 1", got)
+	}
+	if snapshot.CurrentWater != 8 {
+		t.Fatalf("current water = %d, want 8", snapshot.CurrentWater)
+	}
+}
 func TestReservoirSelectRefreshTokensPrioritizesDueAndUnverified(t *testing.T) {
 	accounts := newTestAccountService(t)
 	accounts.AddAccounts([]string{"verified-stale", "imported-token", "restore-due"})

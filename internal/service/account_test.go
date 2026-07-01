@@ -21,6 +21,21 @@ func (testAccountConfig) AutoRemoveInvalidAccounts() bool     { return false }
 func (testAccountConfig) AutoRemoveRateLimitedAccounts() bool { return false }
 func (testAccountConfig) Proxy() string                       { return "" }
 
+func TestAccountRefreshSuccessUpdatesMarksZeroQuotaAsLimited(t *testing.T) {
+	updates := accountRefreshSuccessUpdates(map[string]any{
+		"status":              "正常",
+		"quota":               0,
+		"image_quota_unknown": false,
+	})
+
+	if updates["status"] != "限流" {
+		t.Fatalf("status = %v, want 限流", updates["status"])
+	}
+	if updates["zero_quota_refresh_count_delta"] != 1 {
+		t.Fatalf("zero_quota_refresh_count_delta = %v, want 1", updates["zero_quota_refresh_count_delta"])
+	}
+}
+
 func TestFetchRemoteInfoBootstrapsBeforeAccountRefresh(t *testing.T) {
 	var mu sync.Mutex
 	var paths []string

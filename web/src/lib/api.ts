@@ -150,6 +150,48 @@ export type ReservoirForecastPoint = {
   riskLevel: "normal" | "warning" | "danger" | string;
 };
 
+export type ReservoirRefreshAccount = {
+  account_id?: string;
+  token_preview?: string;
+  layer?: string;
+  priority?: number;
+  age_seconds?: number;
+};
+
+export type ReservoirRefreshDetail = {
+  account_id?: string;
+  token_preview?: string;
+  email?: string | null;
+  status?: string;
+  account_status?: string;
+  success?: boolean;
+  message?: string;
+  error?: string;
+  quota?: number;
+  image_quota_unknown?: boolean;
+  restore_at?: string | null;
+  duration_ms?: number;
+};
+
+export type ReservoirRefreshError = {
+  account_id?: string;
+  access_token?: string;
+  error?: string;
+};
+
+export type ReservoirLastResult = {
+  manual?: boolean;
+  maintenance?: boolean;
+  limit?: number;
+  selected?: number;
+  refreshed?: number;
+  failed?: number;
+  total?: number;
+  duration_ms?: number;
+  selected_accounts?: ReservoirRefreshAccount[];
+  details?: ReservoirRefreshDetail[];
+  errors?: ReservoirRefreshError[];
+};
 export type ReservoirSnapshot = {
   enabled: boolean;
   mode: string;
@@ -168,7 +210,7 @@ export type ReservoirSnapshot = {
   queueSize: number;
   lastRunAt?: string | null;
   lastRefillAt?: string | null;
-  lastResult?: Record<string, unknown>;
+  lastResult?: ReservoirLastResult;
   forecast: ReservoirForecastPoint[];
   risks: string[];
   updatedAt: string;

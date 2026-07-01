@@ -255,22 +255,42 @@ func (s *AccountService) runReservoirCycle(ctx context.Context, manual bool) map
 			}
 		}
 	}
-	tokens := s.selectReservoirRefreshTokens(time.Now(), policy, limit)
+	candidates := s.selectReservoirRefreshCandidates(time.Now(), policy, limit)
+	tokens := reservoirCandidateTokens(candidates)
 	result := map[string]any{
-		"manual":      manual,
-		"selected":    len(tokens),
-		"refreshed":   0,
-		"failed":      0,
-		"duration_ms": int64(0),
+		"manual":            manual,
+		"maintenance":       maintenance,
+		"limit":             limit,
+		"selected":          len(tokens),
+		"selected_accounts": reservoirCandidateDiagnostics(candidates),
+		"refreshed":         0,
+		"failed":            0,
+		"duration_ms":       int64(0),
 	}
 	if len(tokens) > 0 {
 		refresh := s.RefreshAccounts(ctx, tokens)
 		result["refreshed"] = util.ToInt(refresh["refreshed"], 0) + util.ToInt(refresh["session_refreshed"], 0)
 		result["failed"] = util.ToInt(refresh["failed"], 0)
 		result["total"] = util.ToInt(refresh["total"], len(tokens))
+		result["details"] = util.ValueOr(refresh["results"], []map[string]any{})
+		result["errors"] = util.ValueOr(refresh["errors"], []map[string]string{})
 	}
 	finished := time.Now()
 	result["duration_ms"] = finished.Sub(started).Milliseconds()
+	if s.logs != nil {
+		s.logs.Add("蓄水池调度", map[string]any{
+			"module":            "accounts",
+			"manual":            manual,
+			"maintenance":       maintenance,
+			"limit":             limit,
+			"selected":          result["selected"],
+			"refreshed":         result["refreshed"],
+			"failed":            result["failed"],
+			"duration_ms":       result["duration_ms"],
+			"selected_accounts": result["selected_accounts"],
+			"errors":            util.ValueOr(result["errors"], []map[string]string{}),
+		})
+	}
 
 	s.reservoirMu.Lock()
 	s.reservoirLastRunAt = &finished
@@ -283,6 +303,10 @@ func (s *AccountService) runReservoirCycle(ctx context.Context, manual bool) map
 }
 
 func (s *AccountService) selectReservoirRefreshTokens(now time.Time, policy ReservoirPolicy, limit int) []string {
+	return reservoirCandidateTokens(s.selectReservoirRefreshCandidates(now, policy, limit))
+}
+
+func (s *AccountService) selectReservoirRefreshCandidates(now time.Time, policy ReservoirPolicy, limit int) []reservoirRefreshCandidate {
 	if limit <= 0 {
 		return nil
 	}
@@ -295,12 +319,32 @@ func (s *AccountService) selectReservoirRefreshTokens(now time.Time, policy Rese
 	if len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
+	for _, candidate := range candidates {
+		s.lastRefreshAttempt[candidate.token] = now
+	}
+	return candidates
+}
+
+func reservoirCandidateTokens(candidates []reservoirRefreshCandidate) []string {
 	tokens := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		tokens = append(tokens, candidate.token)
-		s.lastRefreshAttempt[candidate.token] = now
 	}
 	return tokens
+}
+
+func reservoirCandidateDiagnostics(candidates []reservoirRefreshCandidate) []map[string]any {
+	items := make([]map[string]any, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, map[string]any{
+			"account_id":    accountIDFromToken(candidate.token),
+			"token_preview": util.AnonymizeToken(candidate.token),
+			"layer":         candidate.layer,
+			"priority":      candidate.priority,
+			"age_seconds":   int64(candidate.age.Seconds()),
+		})
+	}
+	return items
 }
 
 func (s *AccountService) reservoirRefreshCandidatesLocked(now time.Time, policy ReservoirPolicy) []reservoirRefreshCandidate {
@@ -432,17 +476,25 @@ func classifyReservoirAccount(account map[string]any, now time.Time, policy Rese
 }
 
 func accountVerifiedAt(account map[string]any) (time.Time, bool) {
+	latest := time.Time{}
 	for _, key := range []string{"quota_checked_at", "last_success_at", "token_refreshed_at"} {
 		if t, ok := parseAccountTime(account[key]); ok {
-			return t, true
+			if latest.IsZero() || t.After(latest) {
+				latest = t
+			}
 		}
 	}
 	if util.ToInt(account["success"], 0) > 0 {
 		if t, ok := parseAccountTime(account["last_used_at"]); ok {
-			return t, true
+			if latest.IsZero() || t.After(latest) {
+				latest = t
+			}
 		}
 	}
-	return time.Time{}, false
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest, true
 }
 
 func isReservoirTextCandidate(account map[string]any) bool {

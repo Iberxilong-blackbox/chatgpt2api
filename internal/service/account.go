@@ -937,11 +937,16 @@ func accountRefreshSuccessUpdates(remote map[string]any) map[string]any {
 	now := util.NowISO()
 	updates["quota_checked_at"] = now
 	quota := util.ToInt(updates["quota"], 0)
+	unknown := util.ToBool(updates["image_quota_unknown"])
 	if quota > 0 {
+		updates["status"] = "正常"
 		updates["last_nonzero_quota"] = quota
 		updates["zero_quota_refresh_count"] = 0
-	} else if !util.ToBool(updates["image_quota_unknown"]) {
+	} else if !unknown {
+		updates["status"] = "限流"
 		updates["zero_quota_refresh_count_delta"] = 1
+	} else {
+		updates["status"] = "正常"
 	}
 	return updates
 }
@@ -1292,13 +1297,17 @@ func (s *AccountService) RefreshAccountViaSession(accessToken, newAccessToken, n
 		}
 	}
 
-	account := normalizeAccount(mergeMaps(s.items[idx], map[string]any{
+	merged := mergeMaps(s.items[idx], map[string]any{
 		"access_token":       newAccessToken,
 		"session_token":      newSessionToken,
 		"session_expires":    newExpires,
 		"status":             "正常",
 		"token_refreshed_at": util.NowISO(),
-	}))
+	})
+	if !util.ToBool(merged["image_quota_unknown"]) && util.ToInt(merged["quota"], 0) <= 0 {
+		merged["status"] = "限流"
+	}
+	account := normalizeAccount(merged)
 	if account == nil {
 		return false
 	}

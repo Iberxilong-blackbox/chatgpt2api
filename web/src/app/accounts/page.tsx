@@ -157,8 +157,8 @@ const metricCards = [
   },
   {
     key: "quota",
-    label: "可用额度",
-    description: "正常账号合计",
+    label: "账面额度",
+    description: "正常账号额度合计",
     icon: RefreshCw,
     iconClassName: "bg-[#edf4ff] text-[#1456f0] ring-1 ring-blue-100",
   },
@@ -185,7 +185,7 @@ function formatQuota(account: Account) {
   return String(Math.max(0, account.quota));
 }
 
-function formatRestoreAt(value?: string | null) {
+function formatRestoreAt(value: string | null | undefined, mode: "restore" | "reset") {
   if (!value) {
     return { absolute: "—", relative: "" };
   }
@@ -199,7 +199,8 @@ function formatRestoreAt(value?: string | null) {
   const totalHours = Math.ceil(diffMs / (1000 * 60 * 60));
   const days = Math.floor(totalHours / 24);
   const hours = totalHours % 24;
-  const relative = diffMs > 0 ? `剩余 ${days}d ${hours}h` : "已到恢复时间";
+  const reachedText = mode === "restore" ? "已到恢复时间" : "已到重置时间";
+  const relative = diffMs > 0 ? `剩余 ${days}d ${hours}h` : reachedText;
 
   const pad = (num: number) => String(num).padStart(2, "0");
   const absolute = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
@@ -288,6 +289,22 @@ function formatReservoirTime(value?: string | null) {
   return `${hours} 小时后`;
 }
 
+function formatDurationSeconds(value?: number) {
+  if (!Number.isFinite(value ?? NaN) || !value || value <= 0) return "—";
+  if (value < 60) return `${Math.round(value)}秒`;
+  const minutes = Math.floor(value / 60);
+  const seconds = Math.round(value % 60);
+  if (minutes < 60) return seconds > 0 ? `${minutes}分${seconds}秒` : `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes > 0 ? `${hours}小时${restMinutes}分` : `${hours}小时`;
+}
+
+function formatDurationMs(value?: number) {
+  if (!Number.isFinite(value ?? NaN) || !value || value <= 0) return "—";
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return formatDurationSeconds(value / 1000);
+}
 function formatForecastHour(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -889,10 +906,12 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   };
 
   const renderRestoreInfo = (account: Account) => {
-    const restore = formatRestoreAt(account.restoreAt);
+    const isRestore = account.status === "限流" || account.status === "过期待刷新" || (!account.imageQuotaUnknown && account.quota <= 0);
+    const restore = formatRestoreAt(account.restoreAt, isRestore ? "restore" : "reset");
     return (
       <div className="flex flex-col gap-0.5 text-xs leading-5 text-muted-foreground">
-        {restore.relative ? <span className="font-medium text-foreground">{restore.relative}</span> : null}
+        <span className="font-medium text-foreground">{isRestore ? "恢复时间" : "额度重置"}</span>
+        {restore.relative ? <span>{restore.relative}</span> : null}
         <span>{restore.absolute}</span>
       </div>
     );
@@ -1334,6 +1353,63 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                   </div>
                 ))}
               </div>
+              {reservoirSnapshot?.lastResult ? (
+                <div className="rounded-xl border border-stone-200 bg-white p-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-xs font-semibold text-stone-900">最近一轮调度</div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-stone-500">
+                        <span>{reservoirSnapshot.lastResult.manual ? "手动触发" : reservoirSnapshot.lastResult.maintenance ? "维护刷新" : "自动补水"}</span>
+                        <span>上限 {formatCompact(reservoirSnapshot.lastResult.limit ?? 0)}</span>
+                        <span>选中 {formatCompact(reservoirSnapshot.lastResult.selected ?? 0)}</span>
+                        <span>成功 {formatCompact(reservoirSnapshot.lastResult.refreshed ?? 0)}</span>
+                        <span>失败 {formatCompact(reservoirSnapshot.lastResult.failed ?? 0)}</span>
+                        <span>耗时 {formatDurationMs(reservoirSnapshot.lastResult.duration_ms)}</span>
+                      </div>
+                    </div>
+                    <Badge variant={(reservoirSnapshot.lastResult.failed ?? 0) > 0 ? "warning" : "secondary"} className="w-fit rounded-md px-2 py-1">
+                      {reservoirSnapshot.lastResult.selected ? "有调度记录" : "未选中账号"}
+                    </Badge>
+                  </div>
+                  {(reservoirSnapshot.lastResult.selected_accounts?.length ?? 0) > 0 ? (
+                    <div className="mt-3 grid gap-2 lg:grid-cols-3">
+                      {reservoirSnapshot.lastResult.selected_accounts?.map((item, index) => {
+                        const detail = reservoirSnapshot.lastResult?.details?.find((entry) => entry.account_id === item.account_id);
+                        const error = detail?.error || reservoirSnapshot.lastResult?.errors?.find((entry) => entry.account_id === item.account_id)?.error || "";
+                        const statusText = detail?.status === "success" ? "成功" : detail?.status === "pending_session_refresh" ? "待刷新Token" : error ? "失败" : "已选择";
+                        const statusClassName = detail?.status === "success"
+                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                          : error || detail?.status === "error"
+                            ? "border-rose-200 bg-rose-50 text-rose-700"
+                            : "border-amber-200 bg-amber-50 text-amber-700";
+                        return (
+                          <div key={`${item.account_id ?? "account"}-${index}`} className="rounded-lg bg-stone-50 px-3 py-2 text-xs">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate font-mono text-[11px] text-stone-600">{item.token_preview ?? item.account_id ?? "—"}</span>
+                              <span className={cn("shrink-0 rounded border px-1.5 py-0.5", statusClassName)}>{statusText}</span>
+                            </div>
+                            <div className="mt-2 flex items-center justify-between text-stone-500">
+                              <span>{reservoirLayerLabels[item.layer ?? ""] ?? item.layer ?? "未知层级"}</span>
+                              <span>优先级 {item.priority ?? "—"}</span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between text-stone-500">
+                              <span>信息年龄</span>
+                              <span>{formatDurationSeconds(item.age_seconds)}</span>
+                            </div>
+                            {detail ? (
+                              <div className="mt-1 flex items-center justify-between text-stone-500">
+                                <span>{detail.account_status ?? detail.message ?? "结果"}</span>
+                                <span>{detail.image_quota_unknown ? "未知额度" : `额度 ${detail.quota ?? "—"}`}</span>
+                              </div>
+                            ) : null}
+                            {error ? <div className="mt-2 break-all text-rose-600">{error}</div> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {reservoirForecastPoints.length > 0 ? (
                 <div className="rounded-xl border border-stone-200 bg-stone-50/70 p-3">
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1683,7 +1759,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                         <TableHead className="w-48">状态 / 类型</TableHead>
                         <TableHead className="w-28">养号</TableHead>
                         <TableHead className="w-32">额度</TableHead>
-                        <TableHead className="w-44">恢复时间</TableHead>
+                        <TableHead className="w-44">重置/恢复时间</TableHead>
                         <TableHead className="w-36">调用</TableHead>
                         <TableHead className="w-28 text-right">操作</TableHead>
                       </TableRow>

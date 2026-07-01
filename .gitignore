@@ -22,6 +22,7 @@ edit
 aurora/
 
 # useless
+web/public/presets/editorial-fashion.webp
 docs/riskM/image.png
 docker-compose-local.yml
 .codegraph/
