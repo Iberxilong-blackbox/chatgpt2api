@@ -76,6 +76,8 @@ type reservoirRefreshCandidate struct {
 	layer    string
 	priority int
 	age      time.Duration
+	email    string
+	userID   string
 }
 
 func DefaultReservoirPolicy() ReservoirPolicy {
@@ -268,7 +270,7 @@ func (s *AccountService) runReservoirCycle(ctx context.Context, manual bool) map
 		"duration_ms":       int64(0),
 	}
 	if len(tokens) > 0 {
-		refresh := s.RefreshAccounts(ctx, tokens)
+		refresh := s.RefreshAccountsSerial(ctx, tokens)
 		result["refreshed"] = util.ToInt(refresh["refreshed"], 0) + util.ToInt(refresh["session_refreshed"], 0)
 		result["failed"] = util.ToInt(refresh["failed"], 0)
 		result["total"] = util.ToInt(refresh["total"], len(tokens))
@@ -339,6 +341,9 @@ func reservoirCandidateDiagnostics(candidates []reservoirRefreshCandidate) []map
 		items = append(items, map[string]any{
 			"account_id":    accountIDFromToken(candidate.token),
 			"token_preview": util.AnonymizeToken(candidate.token),
+			"email":         candidate.email,
+			"user_id":       candidate.userID,
+			"label":         firstNonEmpty(candidate.email, candidate.userID, util.AnonymizeToken(candidate.token)),
 			"layer":         candidate.layer,
 			"priority":      candidate.priority,
 			"age_seconds":   int64(candidate.age.Seconds()),
@@ -366,7 +371,14 @@ func (s *AccountService) reservoirRefreshCandidatesLocked(now time.Time, policy 
 		} else if importedAt, ok := parseAccountTime(account["imported_at"]); ok {
 			age = now.Sub(importedAt)
 		}
-		candidates = append(candidates, reservoirRefreshCandidate{token: token, layer: layer, priority: priority, age: age})
+		candidates = append(candidates, reservoirRefreshCandidate{
+			token:    token,
+			layer:    layer,
+			priority: priority,
+			age:      age,
+			email:    util.Clean(account["email"]),
+			userID:   util.Clean(account["user_id"]),
+		})
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].priority != candidates[j].priority {
@@ -376,7 +388,6 @@ func (s *AccountService) reservoirRefreshCandidatesLocked(now time.Time, policy 
 	})
 	return candidates
 }
-
 func reservoirRefreshPriority(layer string) int {
 	switch layer {
 	case ReservoirLayerRestoreDue:

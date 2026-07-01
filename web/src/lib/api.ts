@@ -153,6 +153,9 @@ export type ReservoirForecastPoint = {
 export type ReservoirRefreshAccount = {
   account_id?: string;
   token_preview?: string;
+  email?: string;
+  user_id?: string;
+  label?: string;
   layer?: string;
   priority?: number;
   age_seconds?: number;

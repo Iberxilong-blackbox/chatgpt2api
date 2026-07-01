@@ -1385,12 +1385,12 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                         return (
                           <div key={`${item.account_id ?? "account"}-${index}`} className="rounded-lg bg-stone-50 px-3 py-2 text-xs">
                             <div className="flex items-center justify-between gap-2">
-                              <span className="truncate font-mono text-[11px] text-stone-600">{item.token_preview ?? item.account_id ?? "—"}</span>
+                              <span className="truncate text-[11px] font-medium text-stone-700">{item.label ?? item.email ?? item.user_id ?? item.token_preview ?? item.account_id ?? "—"}</span>
                               <span className={cn("shrink-0 rounded border px-1.5 py-0.5", statusClassName)}>{statusText}</span>
                             </div>
                             <div className="mt-2 flex items-center justify-between text-stone-500">
                               <span>{reservoirLayerLabels[item.layer ?? ""] ?? item.layer ?? "未知层级"}</span>
-                              <span>优先级 {item.priority ?? "—"}</span>
+                              <span className="font-mono text-[11px]">{item.token_preview ?? item.account_id ?? "—"}</span>
                             </div>
                             <div className="mt-1 flex items-center justify-between text-stone-500">
                               <span>信息年龄</span>

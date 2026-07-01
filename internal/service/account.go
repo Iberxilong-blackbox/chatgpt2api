@@ -952,6 +952,14 @@ func accountRefreshSuccessUpdates(remote map[string]any) map[string]any {
 }
 
 func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []string) map[string]any {
+	return s.refreshAccountsWithWorkerLimit(ctx, accessTokens, 10)
+}
+
+func (s *AccountService) RefreshAccountsSerial(ctx context.Context, accessTokens []string) map[string]any {
+	return s.refreshAccountsWithWorkerLimit(ctx, accessTokens, 1)
+}
+
+func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, accessTokens []string, workerLimit int) map[string]any {
 	tokens := cleanTokens(accessTokens)
 	if len(tokens) == 0 {
 		return map[string]any{
@@ -975,8 +983,11 @@ func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []str
 		duration time.Duration
 	}
 	workers := len(tokens)
-	if workers > 10 {
-		workers = 10
+	if workerLimit <= 0 {
+		workerLimit = 1
+	}
+	if workers > workerLimit {
+		workers = workerLimit
 	}
 	jobs := make(chan string)
 	results := make(chan result, len(tokens))

@@ -308,6 +308,58 @@ func TestRefreshAccountsReturnsEmptyErrorsArray(t *testing.T) {
 	}
 }
 
+func TestRefreshAccountsSerialUsesOneWorker(t *testing.T) {
+	var mu sync.Mutex
+	active := 0
+	maxActive := 0
+	enter := func() func() {
+		mu.Lock()
+		active++
+		if active > maxActive {
+			maxActive = active
+		}
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+		return func() {
+			mu.Lock()
+			active--
+			mu.Unlock()
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>ok</html>"))
+		case "/backend-api/me":
+			defer enter()()
+			writeJSON(t, w, map[string]any{"email": "user@example.com", "id": "user-1"})
+		case "/backend-api/conversation/init":
+			defer enter()()
+			writeJSON(t, w, map[string]any{
+				"limits_progress": []map[string]any{{"feature_name": "image_gen", "remaining": 1}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	accounts := newTestAccountService(t)
+	accounts.remoteBaseURL = server.URL
+	accounts.browserHTTPClient = func(string, time.Duration) *http.Client {
+		return server.Client()
+	}
+	accounts.AddAccounts([]string{"token-1", "token-2", "token-3"})
+
+	result := accounts.RefreshAccountsSerial(context.Background(), []string{"token-1", "token-2", "token-3"})
+	if result["total"] != 3 || result["failed"] != 0 {
+		t.Fatalf("refresh summary = total %#v failed %#v, want 3/0", result["total"], result["failed"])
+	}
+	if maxActive != 1 {
+		t.Fatalf("max concurrent upstream requests = %d, want 1", maxActive)
+	}
+}
 func TestRefreshAccountStateMarksUnauthorizedInitAsInvalid(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
