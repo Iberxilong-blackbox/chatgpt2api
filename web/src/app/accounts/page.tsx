@@ -274,6 +274,7 @@ const reservoirLayerLabels: Record<string, string> = {
   restore_due: "到期待刷新",
   stale_verified: "信息过旧",
   long_unrefreshed: "超3天未刷新",
+  zero_quota_recheck_due: "0额度待复查",
   zero_quota_rechecked: "连续0额度",
   refreshing: "刷新中",
   invalid_or_disabled: "异常/禁用",

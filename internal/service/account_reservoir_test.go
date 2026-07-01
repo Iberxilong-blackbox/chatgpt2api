@@ -118,6 +118,56 @@ func TestReservoirSelectRefreshTokensSkipsCooldown(t *testing.T) {
 	}
 }
 
+func TestReservoirSelectRefreshTokensDemotesZeroQuotaWithoutRestoreAt(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccounts([]string{"stale-token", "zero-quota-token"})
+	now := time.Now()
+	accounts.UpdateAccount("stale-token", map[string]any{
+		"status":           "正常",
+		"quota":            4,
+		"quota_checked_at": now.Add(-8 * time.Hour).Format(time.RFC3339),
+	})
+	accounts.UpdateAccount("zero-quota-token", map[string]any{
+		"status":           "限流",
+		"quota":            0,
+		"quota_checked_at": now.Add(-8 * time.Hour).Format(time.RFC3339),
+	})
+
+	candidates := accounts.selectReservoirRefreshCandidates(now, DefaultReservoirPolicy(), 2)
+	if len(candidates) != 2 {
+		t.Fatalf("selected candidates = %#v, want 2", candidates)
+	}
+	if candidates[0].token != "stale-token" || candidates[0].layer != ReservoirLayerStaleVerified {
+		t.Fatalf("first candidate = %#v, want stale verified token", candidates[0])
+	}
+	if candidates[1].token != "zero-quota-token" || candidates[1].layer != ReservoirLayerZeroQuotaRecheckDue {
+		t.Fatalf("second candidate = %#v, want zero quota recheck token", candidates[1])
+	}
+}
+
+func TestReservoirSelectRefreshTokensSkipsRecentZeroQuotaRecheck(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccounts([]string{"recent-zero-quota", "old-zero-quota"})
+	now := time.Now()
+	accounts.UpdateAccount("recent-zero-quota", map[string]any{
+		"status":           "限流",
+		"quota":            0,
+		"quota_checked_at": now.Add(-time.Hour).Format(time.RFC3339),
+	})
+	accounts.UpdateAccount("old-zero-quota", map[string]any{
+		"status":           "限流",
+		"quota":            0,
+		"quota_checked_at": now.Add(-8 * time.Hour).Format(time.RFC3339),
+	})
+
+	candidates := accounts.selectReservoirRefreshCandidates(now, DefaultReservoirPolicy(), 2)
+	if len(candidates) != 1 {
+		t.Fatalf("selected candidates = %#v, want 1", candidates)
+	}
+	if candidates[0].token != "old-zero-quota" || candidates[0].layer != ReservoirLayerZeroQuotaRecheckDue {
+		t.Fatalf("selected candidate = %#v, want old zero quota recheck token", candidates[0])
+	}
+}
 func TestReservoirForecastAddsRestoreInflowFromLastNonzeroQuota(t *testing.T) {
 	now := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
 	policy := DefaultReservoirPolicy()

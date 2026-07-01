@@ -18,24 +18,26 @@ const (
 	ReservoirLayerRestoreDue          = "restore_due"
 	ReservoirLayerStaleVerified       = "stale_verified"
 	ReservoirLayerLongUnrefreshed     = "long_unrefreshed"
+	ReservoirLayerZeroQuotaRecheckDue = "zero_quota_recheck_due"
 	ReservoirLayerZeroQuotaRechecked  = "zero_quota_rechecked"
 	ReservoirLayerRefreshing          = "refreshing"
 	ReservoirLayerInvalidOrDisabled   = "invalid_or_disabled"
 )
 
 type ReservoirPolicy struct {
-	FixedMinWater        int
-	LookbackWindow       time.Duration
-	ProjectionWindow     time.Duration
-	ForecastWindow       time.Duration
-	ForecastStep         time.Duration
-	ForecastSafetyWindow time.Duration
-	BurstMultiplier      float64
-	StaleAfter           time.Duration
-	LongUnrefreshedAfter time.Duration
-	ZeroQuotaMaxRechecks int
-	MaxRefreshPerCycle   int
-	MaintenancePerCycle  int
+	FixedMinWater         int
+	LookbackWindow        time.Duration
+	ProjectionWindow      time.Duration
+	ForecastWindow        time.Duration
+	ForecastStep          time.Duration
+	ForecastSafetyWindow  time.Duration
+	BurstMultiplier       float64
+	StaleAfter            time.Duration
+	LongUnrefreshedAfter  time.Duration
+	ZeroQuotaRecheckAfter time.Duration
+	ZeroQuotaMaxRechecks  int
+	MaxRefreshPerCycle    int
+	MaintenancePerCycle   int
 }
 
 type ReservoirForecastPoint struct {
@@ -82,18 +84,19 @@ type reservoirRefreshCandidate struct {
 
 func DefaultReservoirPolicy() ReservoirPolicy {
 	return ReservoirPolicy{
-		FixedMinWater:        200,
-		LookbackWindow:       10 * time.Minute,
-		ProjectionWindow:     30 * time.Minute,
-		ForecastWindow:       24 * time.Hour,
-		ForecastStep:         time.Hour,
-		ForecastSafetyWindow: 6 * time.Hour,
-		BurstMultiplier:      3,
-		StaleAfter:           6 * time.Hour,
-		LongUnrefreshedAfter: 72 * time.Hour,
-		ZeroQuotaMaxRechecks: 2,
-		MaxRefreshPerCycle:   3,
-		MaintenancePerCycle:  1,
+		FixedMinWater:         200,
+		LookbackWindow:        10 * time.Minute,
+		ProjectionWindow:      30 * time.Minute,
+		ForecastWindow:        24 * time.Hour,
+		ForecastStep:          time.Hour,
+		ForecastSafetyWindow:  6 * time.Hour,
+		BurstMultiplier:       3,
+		StaleAfter:            6 * time.Hour,
+		LongUnrefreshedAfter:  72 * time.Hour,
+		ZeroQuotaRecheckAfter: 6 * time.Hour,
+		ZeroQuotaMaxRechecks:  2,
+		MaxRefreshPerCycle:    3,
+		MaintenancePerCycle:   1,
 	}
 }
 
@@ -360,6 +363,9 @@ func (s *AccountService) reservoirRefreshCandidatesLocked(now time.Time, policy 
 			continue
 		}
 		layer := classifyReservoirAccount(account, now, policy)
+		if layer == ReservoirLayerZeroQuotaRecheckDue && isZeroQuotaRecheckCoolingDown(account, now, policy) {
+			continue
+		}
 		priority := reservoirRefreshPriority(layer)
 		if priority == 0 {
 			continue
@@ -400,6 +406,8 @@ func reservoirRefreshPriority(layer string) int {
 		return 200
 	case ReservoirLayerAvailableUnknown:
 		return 100
+	case ReservoirLayerZeroQuotaRecheckDue:
+		return 50
 	default:
 		return 0
 	}
@@ -428,6 +436,7 @@ func reservoirLayerCounts() map[string]int {
 		ReservoirLayerRestoreDue:          0,
 		ReservoirLayerStaleVerified:       0,
 		ReservoirLayerLongUnrefreshed:     0,
+		ReservoirLayerZeroQuotaRecheckDue: 0,
 		ReservoirLayerZeroQuotaRechecked:  0,
 		ReservoirLayerRefreshing:          0,
 		ReservoirLayerInvalidOrDisabled:   0,
@@ -455,8 +464,14 @@ func classifyReservoirAccount(account map[string]any, now time.Time, policy Rese
 		return ReservoirLayerRestoreDue
 	}
 	if status == "限流" {
-		if restoreAt, ok := parseAccountRestoreAt(account["restore_at"]); ok && restoreAt.After(now) {
-			return ReservoirLayerEmptyWaitingRestore
+		if restoreAt, ok := parseAccountRestoreAt(account["restore_at"]); ok {
+			if restoreAt.After(now) {
+				return ReservoirLayerEmptyWaitingRestore
+			}
+			return ReservoirLayerRestoreDue
+		}
+		if util.ToInt(account["quota"], 0) == 0 && !util.ToBool(account["image_quota_unknown"]) {
+			return ReservoirLayerZeroQuotaRecheckDue
 		}
 		return ReservoirLayerRestoreDue
 	}
@@ -480,10 +495,24 @@ func classifyReservoirAccount(account map[string]any, now time.Time, policy Rese
 		}
 		return ReservoirLayerAvailableUnknown
 	}
-	if restoreAt, ok := parseAccountRestoreAt(account["restore_at"]); ok && restoreAt.After(now) {
-		return ReservoirLayerEmptyWaitingRestore
+	if restoreAt, ok := parseAccountRestoreAt(account["restore_at"]); ok {
+		if restoreAt.After(now) {
+			return ReservoirLayerEmptyWaitingRestore
+		}
+		return ReservoirLayerRestoreDue
+	}
+	if !util.ToBool(account["image_quota_unknown"]) {
+		return ReservoirLayerZeroQuotaRecheckDue
 	}
 	return ReservoirLayerRestoreDue
+}
+
+func isZeroQuotaRecheckCoolingDown(account map[string]any, now time.Time, policy ReservoirPolicy) bool {
+	if policy.ZeroQuotaRecheckAfter <= 0 {
+		return false
+	}
+	verifiedAt, verified := accountVerifiedAt(account)
+	return verified && now.Sub(verifiedAt) < policy.ZeroQuotaRecheckAfter
 }
 
 func accountVerifiedAt(account map[string]any) (time.Time, bool) {
