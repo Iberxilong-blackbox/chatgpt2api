@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"chatgpt2api/internal/browserfp"
+	"chatgpt2api/internal/prooftoken"
 	"chatgpt2api/internal/service"
 	"chatgpt2api/internal/util"
 )
@@ -38,6 +39,10 @@ const (
 )
 
 var sentinelDebugEnabled = false
+
+func init() {
+	prooftoken.DebugLog = sentinelLog
+}
 
 func SetSentinelDebugEnabled(enabled bool) {
 	sentinelDebugEnabled = enabled

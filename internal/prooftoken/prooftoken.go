@@ -7,6 +7,7 @@ import (
 	"fmt"
 	mathrand "math/rand"
 	"strconv"
+	"strings"
 	"time"
 
 	"chatgpt2api/internal/browserfp"
@@ -41,6 +42,24 @@ const DefaultFlow = "chatgpt"
 
 // fingerprintSize 25 元素 config, 对齐新版 SDK 算法 (conversation.txt 2026-06 样本)。
 const fingerprintSize = 25
+
+// powSentinelNonce / powSentinelElapsed 是 PoW 模板化的哨兵值——在
+// json.Marshal 输出中定位 nonce([3]) 和 elapsed([9]) 的位置。
+// 取负数保证不会与真实数据冲突。
+const (
+	powSentinelNonce   = -777777
+	powSentinelElapsed = -888888
+)
+
+// DebugLog 是 PoW 诊断日志的输出通道。由上层(backend)注入 sentinelLog。
+// 为 nil 时不输出任何诊断日志。
+var DebugLog func(format string, args ...any)
+
+func powLog(format string, args ...any) {
+	if DebugLog != nil {
+		DebugLog(format, args...)
+	}
+}
 
 // windowKeys 候选 [13] (Object.getOwnPropertyNames(window) 随机键)
 var windowKeys = []string{
@@ -133,6 +152,28 @@ func FNV1aHash(text string) string {
 	for _, ch := range text {
 		h ^= uint32(ch)
 		h = imul32(h, fnvPrime)
+	}
+	h ^= h >> 16
+	h = imul32(h, 2246822507)
+	h ^= h >> 13
+	h = imul32(h, 3266489909)
+	h ^= h >> 16
+	return fmt.Sprintf("%08x", h)
+}
+
+// FNV1aHashBytes 是 FNV1aHash 的零分配版本——对多个 []byte 片段顺序计算
+// FNV-1a 哈希。用于 PoW 热循环中避免 seed + base64 的字符串拼接分配。
+func FNV1aHashBytes(parts ...[]byte) string {
+	const (
+		fnvOffset = 2166136261
+		fnvPrime  = 16777619
+	)
+	h := uint32(fnvOffset)
+	for _, part := range parts {
+		for _, b := range part {
+			h ^= uint32(b)
+			h = imul32(h, fnvPrime)
+		}
 	}
 	h ^= h >> 16
 	h = imul32(h, 2246822507)
@@ -254,7 +295,10 @@ func (c *Config) GenerateRequirementsToken() string {
 }
 
 // SolveProofOfWork 按服务端挑战求解 proof token (gAAAAAB 前缀 + FNV-1a 哈希)。
-// [13]/[17] 时间自洽由 fingerprint.Build25 内部保证,这里不用再覆盖。
+//
+// 使用模板化优化: 25 元素 config 中只有 [3] nonce 和 [9] elapsed 每次迭代变化,
+// 其余 23 个元素在循环前一次性 JSON 序列化, 循环内只做整数→字符串拼接。
+// 相比旧实现省掉了 500k 次 json.Marshal + Build25 调用。
 //
 // 失败 fallback 格式(对齐 sdk.deob.pretty.js:329 + buildGenerateFailMessage:364-366):
 //
@@ -265,10 +309,161 @@ func (c *Config) SolveProofOfWork(seed, difficulty string) string {
 	if seed == "" || difficulty == "" {
 		return PrefixProof + Suffix
 	}
+
 	startTime := time.Now()
 	rng := mathRandNew(time.Now().UnixNano())
 	diffLen := len(difficulty)
 	const maxIter = 500_000
+
+	// —— 阶段 1: 构建 JSON 模板 (一次性) ——
+	// 用唯一的负数哨兵标记 nonce 和 elapsed 在 JSON 输出中的位置。
+	sentinelNonce := powSentinelNonce
+	sentinelElapsed := int64(powSentinelElapsed)
+
+	tmplCfg := c.buildConfig(rng, &sentinelNonce, &sentinelElapsed)
+	tmplJSON, err := json.Marshal(tmplCfg)
+	if err != nil {
+		powLog("poW: template marshal FAILED — %v; falling back to legacy", err)
+		return c.solveProofOfWorkLegacy(seed, difficulty, rng)
+	}
+	tmplStr := string(tmplJSON)
+
+	// 定位哨兵在 JSON 串中的位置
+	nonceSentinel := strconv.Itoa(sentinelNonce)
+	elapsedSentinel := strconv.FormatInt(sentinelElapsed, 10)
+	noncePos := strings.Index(tmplStr, nonceSentinel)
+	elapsedPos := strings.Index(tmplStr, elapsedSentinel)
+
+	if noncePos < 0 || elapsedPos < 0 {
+		powLog("poW: sentinel not found in JSON — noncePos=%d elapsedPos=%d; falling back to legacy",
+			noncePos, elapsedPos)
+		return c.solveProofOfWorkLegacy(seed, difficulty, rng)
+	}
+
+	jsonPrefix := tmplStr[:noncePos]
+	jsonMiddle := tmplStr[noncePos+len(nonceSentinel) : elapsedPos]
+	jsonSuffix := tmplStr[elapsedPos+len(elapsedSentinel):]
+
+	powLog("poW: template built — json=%dB prefix=%dB middle=%dB suffix=%dB",
+		len(tmplStr), len(jsonPrefix), len(jsonMiddle), len(jsonSuffix))
+
+	// —— 阶段 2: 诊断验证(首次迭代, 仅 debug 模式) ——
+	if !verifyPoWTemplate(c, rng, tmplStr, jsonPrefix, jsonMiddle, jsonSuffix) {
+		powLog("poW: template verification FAILED — falling back to legacy method")
+		return c.solveProofOfWorkLegacy(seed, difficulty, rng)
+	}
+
+	// —— 阶段 3: 主求解循环 ——
+	// 预分配所有缓冲区, 循环内零堆分配。
+	preCap := len(jsonPrefix) + len(jsonMiddle) + len(jsonSuffix) + 20
+	jsonBuf := make([]byte, 0, preCap)
+	encBuf := make([]byte, base64.StdEncoding.EncodedLen(preCap))
+	seedBytes := []byte(seed)
+
+	var elapsed int64
+	for i := 0; i < maxIter; i++ {
+		// 每 1024 次迭代更新一次 elapsed, 避免 time.Since 系统调用开销
+		if i&1023 == 0 {
+			elapsed = time.Since(startTime).Milliseconds()
+		}
+
+		// 组装 JSON: prefix + nonce + middle + elapsed + suffix
+		jsonBuf = jsonBuf[:0]
+		jsonBuf = append(jsonBuf, jsonPrefix...)
+		jsonBuf = strconv.AppendInt(jsonBuf, int64(i), 10)
+		jsonBuf = append(jsonBuf, jsonMiddle...)
+		jsonBuf = strconv.AppendInt(jsonBuf, elapsed, 10)
+		jsonBuf = append(jsonBuf, jsonSuffix...)
+
+		// Base64 编码(写入预分配缓冲区, 零分配)
+		encLen := base64.StdEncoding.EncodedLen(len(jsonBuf))
+		base64.StdEncoding.Encode(encBuf, jsonBuf)
+
+		// FNV-1a 哈希: seed + base64(json), 直接走 []byte 避免字符串拼接
+		hashResult := FNV1aHashBytes(seedBytes, encBuf[:encLen])
+		if len(hashResult) >= diffLen && hashResult[:diffLen] <= difficulty {
+			elapsedMs := time.Since(startTime).Milliseconds()
+			powLog("poW: SOLVED — iter=%d elapsed=%dms speed=%.0f/ms diff=%q",
+				i, elapsedMs, float64(i)/float64(max64(1, elapsedMs)), difficulty)
+			return PrefixProof + string(encBuf[:encLen]) + Suffix
+		}
+
+		// 进度日志 (仅 debug 模式, 每 10 万次)
+		if DebugLog != nil && i > 0 && i%100000 == 0 {
+			powLog("poW: progress — iter=%d/%d elapsed=%dms", i, maxIter, time.Since(startTime).Milliseconds())
+		}
+	}
+
+	elapsedMs := time.Since(startTime).Milliseconds()
+	powLog("poW: EXHAUSTED — maxIter=%d elapsed=%dms diff=%q", maxIter, elapsedMs, difficulty)
+	return PrefixProof + ErrorPrefix + DefaultErrorPayload + Suffix
+}
+
+// max64 returns the larger of a and b (int64-safe max, avoid Go 1.21+ builtin dependency).
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// verifyPoWTemplate 对比模板方案与旧方案的首次迭代输出, 确认两者一致。
+// 仅在 DebugLog 启用时执行; 返回 false 表示验证失败。
+func verifyPoWTemplate(c *Config, rng *mathRand, tmplStr string, jsonPrefix, jsonMiddle, jsonSuffix string) bool {
+	if DebugLog == nil {
+		return true // 未启用诊断日志时跳过验证
+	}
+
+	verifyNonce := 0
+	verifyElapsed := int64(0)
+
+	// 旧方案: buildConfig + json.Marshal
+	legacyCfg := c.buildConfig(rng, &verifyNonce, &verifyElapsed)
+	legacyJSON, err := json.Marshal(legacyCfg)
+	if err != nil {
+		powLog("poW: verify — legacy marshal failed: %v", err)
+		return false
+	}
+
+	// 模板方案: prefix + "0" + middle + "0" + suffix
+	var verifyBuf strings.Builder
+	verifyBuf.Grow(len(jsonPrefix) + len(jsonMiddle) + len(jsonSuffix) + 10)
+	verifyBuf.WriteString(jsonPrefix)
+	verifyBuf.WriteString("0")
+	verifyBuf.WriteString(jsonMiddle)
+	verifyBuf.WriteString("0")
+	verifyBuf.WriteString(jsonSuffix)
+	templateStr := verifyBuf.String()
+
+	if string(legacyJSON) != templateStr {
+		powLog("poW: verify — JSON MISMATCH")
+		powLog("poW:   legacy_json   (%dB): %s", len(legacyJSON), legacyJSON)
+		powLog("poW:   template_json (%dB): %s", len(templateStr), templateStr)
+		powLog("poW:   template_full (%dB): %s", len(tmplStr), tmplStr)
+		return false
+	}
+
+	legacyB64 := base64.StdEncoding.EncodeToString(legacyJSON)
+	templateB64 := base64.StdEncoding.EncodeToString([]byte(templateStr))
+	if legacyB64 != templateB64 {
+		powLog("poW: verify — BASE64 MISMATCH")
+		powLog("poW:   legacy_b64:   %s", legacyB64)
+		powLog("poW:   template_b64: %s", templateB64)
+		return false
+	}
+
+	powLog("poW: verify — PASSED (legacy == template, %d bytes JSON)", len(legacyJSON))
+	return true
+}
+
+// solveProofOfWorkLegacy 是旧的逐次 Build25 + Marshal 实现。
+// 保留作为模板方案的 fallback: 当哨兵定位失败或诊断验证不通过时自动切换。
+func (c *Config) solveProofOfWorkLegacy(seed, difficulty string, rng *mathRand) string {
+	startTime := time.Now()
+	diffLen := len(difficulty)
+	const maxIter = 500_000
+
+	powLog("poW: legacy — starting fallback solver")
 
 	for i := 0; i < maxIter; i++ {
 		nonce := i
@@ -278,10 +473,13 @@ func (c *Config) SolveProofOfWork(seed, difficulty string) string {
 		hashInput := seed + encoded
 		hashResult := FNV1aHash(hashInput)
 		if hashResult[:diffLen] <= difficulty {
+			elapsedMs := time.Since(startTime).Milliseconds()
+			powLog("poW: legacy — SOLVED iter=%d elapsed=%dms", i, elapsedMs)
 			return PrefixProof + encoded + Suffix
 		}
 	}
-	// 达到最大次数仍未找到,返回 fallback (error=nil → 默认 "e")
+
+	powLog("poW: legacy — EXHAUSTED maxIter=%d", maxIter)
 	return PrefixProof + ErrorPrefix + DefaultErrorPayload + Suffix
 }
 
