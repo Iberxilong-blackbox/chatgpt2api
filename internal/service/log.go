@@ -52,6 +52,8 @@ type LogQuery struct {
 	IPAddress     string
 	OperationType string
 	LogLevel      string
+	TraceID       string
+	AccountID     string
 	StartDate     string
 	EndDate       string
 	StartTime     string
@@ -338,7 +340,22 @@ func matchLogQuery(item map[string]any, query LogQuery) bool {
 	if level := strings.TrimSpace(query.LogLevel); level != "" && logLevel(item) != strings.ToLower(level) {
 		return false
 	}
+	if !containsFold(logDetailString(item, "trace_id"), query.TraceID) {
+		return false
+	}
+	if query.AccountID != "" && !logContainsAccountID(item, query.AccountID) {
+		return false
+	}
 	return matchLogView(item, query.View)
+}
+
+func logContainsAccountID(item map[string]any, accountID string) bool {
+	for _, attempt := range util.AsMapSlice(util.StringMap(item["detail"])["account_attempts"]) {
+		if containsFold(util.Clean(attempt["account_id"]), accountID) {
+			return true
+		}
+	}
+	return false
 }
 
 func matchLogView(item map[string]any, view string) bool {

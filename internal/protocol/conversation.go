@@ -86,6 +86,7 @@ type ConversationRequest struct {
 	MessageAsError          bool
 	AcquireImageOutputSlot  ImageOutputSlotAcquirer
 	ChargeImageOutput       ImageOutputCharger
+	ImageCallTrace          *ImageCallTrace
 }
 
 func (r ConversationRequest) Normalized() ConversationRequest {
@@ -582,13 +583,20 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 		preferredToken = session.AccessToken
 	}
 	for {
-		token, err := e.nextImageAccessToken(ctx, preferredToken)
+		token, err := e.nextImageAccessToken(ctx, preferredToken, request.ImageCallTrace)
 		if err != nil {
 			result.lastError = err.Error()
 			result.err = NewImageGenerationError(err.Error())
 			return result
 		}
 		useSession := hasSession && token == preferredToken
+		if request.ImageCallTrace != nil {
+			source := "pool"
+			if useSession {
+				source = "conversation_session"
+			}
+			request.ImageCallTrace.AddAttempt(map[string]any{"stage": "upstream_started", "account_id": service.AccountIDFromToken(token), "selection_source": source})
+		}
 		requestForToken := request
 		if useSession {
 			requestForToken.UpstreamConversationID = session.UpstreamConversationID
@@ -688,6 +696,9 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 			if e.Accounts != nil {
 				e.Accounts.MarkImageResult(token, true)
 			}
+			if request.ImageCallTrace != nil {
+				request.ImageCallTrace.AddAttempt(map[string]any{"stage": "upstream_succeeded", "account_id": service.AccountIDFromToken(token)})
+			}
 			e.bindImageConversationSession(request, token, lastConversationID, lastMessageID)
 			return result
 		}
@@ -701,6 +712,9 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 			e.Accounts.MarkImageResult(token, false)
 		}
 		result.lastError = err.Error()
+		if request.ImageCallTrace != nil {
+			request.ImageCallTrace.AddAttempt(map[string]any{"stage": "upstream_failed", "account_id": service.AccountIDFromToken(token), "error": result.lastError})
+		}
 		if useSession {
 			e.invalidateImageConversationSession(request)
 			hasSession = false
@@ -734,7 +748,7 @@ func (e *Engine) StreamImageOutputs(ctx context.Context, client *backend.Client,
 	return e.StreamResponsesImageOutputs(ctx, client, request, index, total)
 }
 
-func (e *Engine) nextImageAccessToken(ctx context.Context, preferredToken string) (string, error) {
+func (e *Engine) nextImageAccessToken(ctx context.Context, preferredToken string, trace *ImageCallTrace) (string, error) {
 	if e.ImageTokenProvider != nil {
 		return e.ImageTokenProvider(ctx)
 	}
@@ -743,13 +757,22 @@ func (e *Engine) nextImageAccessToken(ctx context.Context, preferredToken string
 	}
 	preferredToken = strings.TrimSpace(preferredToken)
 	if preferredToken != "" {
-		if token, err := e.Accounts.GetAvailableAccessTokenFor(ctx, func(account map[string]any) bool {
+		if token, err := e.Accounts.GetAvailableAccessTokenForWithObserver(ctx, func(account map[string]any) bool {
 			return util.Clean(account["access_token"]) == preferredToken
-		}); err == nil && token != "" {
+		}, imageTraceObserver(trace)); err == nil && token != "" {
 			return token, nil
 		}
 	}
-	return e.Accounts.GetAvailableAccessTokenFor(ctx, nil)
+	return e.Accounts.GetAvailableAccessTokenForWithObserver(ctx, nil, imageTraceObserver(trace))
+}
+
+func imageTraceObserver(trace *ImageCallTrace) func(service.ImageAccountSelectionEvent) {
+	if trace == nil {
+		return nil
+	}
+	return func(event service.ImageAccountSelectionEvent) {
+		trace.AddAttempt(map[string]any{"stage": event.Stage, "account_id": event.AccountID, "status_before": event.StatusBefore, "quota_before": event.QuotaBefore, "quota_unknown_before": event.QuotaUnknownBefore, "layer_before": event.LayerBefore, "status_after": event.StatusAfter, "quota_after": event.QuotaAfter, "quota_unknown_after": event.QuotaUnknownAfter, "layer_after": event.LayerAfter, "error": event.Error})
+	}
 }
 
 func (e *Engine) activeImageConversationSession(request ConversationRequest) (service.ImageConversationSession, bool) {

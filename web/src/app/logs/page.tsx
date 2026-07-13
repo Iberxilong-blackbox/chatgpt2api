@@ -44,6 +44,8 @@ function createEmptyFilters(view: LogView): SystemLogFilters {
     ip_address: "",
     operation_type: "",
     log_level: "all",
+	trace_id: "",
+	account_id: "",
     view,
     start_date: "",
     end_date: "",
@@ -279,6 +281,8 @@ function normalizeFilters(filters: SystemLogFilters): SystemLogFilters {
     ip_address: filters.ip_address?.trim() || "",
     operation_type: filters.operation_type?.trim() || "",
     log_level: filters.log_level || "all",
+	trace_id: filters.trace_id?.trim() || "",
+	account_id: filters.account_id?.trim() || "",
     view: normalizeLogView(filters.view),
     start_date: filters.start_date || "",
     end_date: filters.end_date || "",
@@ -402,6 +406,8 @@ function LogsContent() {
             <Input placeholder="摘要或接口" value={filters.summary || ""} onChange={(event) => updateFilter("summary", event.target.value)} />
             <Input placeholder="IP 地址" value={filters.ip_address || ""} onChange={(event) => updateFilter("ip_address", event.target.value)} />
             <Input placeholder="操作类型" value={filters.operation_type || ""} onChange={(event) => updateFilter("operation_type", event.target.value)} />
+			<Input placeholder="调用追踪 ID" value={filters.trace_id || ""} onChange={(event) => updateFilter("trace_id", event.target.value)} />
+			<Input placeholder="账号 ID" value={filters.account_id || ""} onChange={(event) => updateFilter("account_id", event.target.value)} />
             <Select value={filters.method || "all"} onValueChange={(value) => updateFilter("method", value)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -466,6 +472,7 @@ function LogsContent() {
                   <TableHead>接口</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>耗时</TableHead>
+				  <TableHead>调用链</TableHead>
                   <TableHead>摘要</TableHead>
                   <TableHead className="w-28">详情</TableHead>
                 </TableRow>
@@ -492,6 +499,7 @@ function LogsContent() {
                         </div>
                       </TableCell>
                       <TableCell>{formatDuration(item)}</TableCell>
+					  <TableCell className="max-w-[160px] text-xs">{detailText(item, "trace_id") ? <div className="space-y-1"><div className="truncate font-mono text-foreground">{detailText(item, "trace_id")}</div><div>{detailText(item, "attempt_count") || "0"} 次尝试</div></div> : "—"}</TableCell>
                       <TableCell className="max-w-[300px] truncate text-muted-foreground">{item.summary || "-"}</TableCell>
                       <TableCell>
                         <Button variant="ghost" className="h-8 rounded-lg px-3" onClick={() => openDetail(item)}>
@@ -595,6 +603,10 @@ function LogsContent() {
                   </pre>
                 </section>
               ) : null}
+
+			  {Array.isArray(detailLog?.detail?.account_attempts) && detailLog.detail.account_attempts.length > 0 ? (
+				<section className="space-y-3"><div className="text-sm font-semibold text-foreground">账号调用链</div><div className="space-y-2 border-l-2 border-sky-200 pl-4">{detailLog.detail.account_attempts.map((value, index) => { const attempt = value as Record<string, unknown>; return <div key={index} className="rounded-xl border border-border bg-sky-50/40 p-3 text-xs dark:bg-sky-950/20"><div className="flex justify-between gap-3"><span className="font-medium text-foreground">{String(attempt.stage || "attempt")}</span><span className="font-mono text-muted-foreground">{String(attempt.account_id || "—")}</span></div><div className="mt-2 grid gap-1 text-muted-foreground sm:grid-cols-2"><span>刷新前：{String(attempt.status_before || "—")} / 额度 {String(attempt.quota_before ?? "—")}{attempt.quota_unknown_before ? "（未知）" : ""}</span><span>刷新后：{String(attempt.status_after || "—")} / 额度 {String(attempt.quota_after ?? "—")}{attempt.quota_unknown_after ? "（未知）" : ""}</span></div>{attempt.error ? <div className="mt-2 break-all text-rose-600">{String(attempt.error)}</div> : null}</div> })}</div></section>
+			  ) : null}
 
               {detailUrls.length ? (
                 <section className="space-y-3">

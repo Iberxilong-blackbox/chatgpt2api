@@ -405,6 +405,8 @@ func parseLogQuery(r *http.Request) (service.LogQuery, error) {
 		IPAddress:     strings.TrimSpace(values.Get("ip_address")),
 		OperationType: strings.TrimSpace(values.Get("operation_type")),
 		LogLevel:      strings.TrimSpace(values.Get("log_level")),
+		TraceID:       strings.TrimSpace(values.Get("trace_id")),
+		AccountID:     strings.TrimSpace(values.Get("account_id")),
 		StartDate:     strings.TrimSpace(values.Get("start_date")),
 		EndDate:       strings.TrimSpace(values.Get("end_date")),
 		StartTime:     strings.TrimSpace(values.Get("start_time")),

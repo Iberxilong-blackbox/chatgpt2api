@@ -1,4 +1,5 @@
 # Generated files
+.gocache/
 build/
 dist/
 web_dist

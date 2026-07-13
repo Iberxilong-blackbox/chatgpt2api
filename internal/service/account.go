@@ -861,6 +861,10 @@ func (s *AccountService) GetAvailableAccessToken(ctx context.Context) (string, e
 }
 
 func (s *AccountService) GetAvailableAccessTokenFor(ctx context.Context, allow func(map[string]any) bool) (string, error) {
+	return s.GetAvailableAccessTokenForWithObserver(ctx, allow, nil)
+}
+
+func (s *AccountService) GetAvailableAccessTokenForWithObserver(ctx context.Context, allow func(map[string]any) bool, observe func(ImageAccountSelectionEvent)) (string, error) {
 	attempted := map[string]struct{}{}
 	var lastRefreshErr error
 	for {
@@ -872,17 +876,30 @@ func (s *AccountService) GetAvailableAccessTokenFor(ctx context.Context, allow f
 			return "", err
 		}
 		attempted[reservation.token] = struct{}{}
+		before := s.GetAccount(reservation.token)
 		account, refreshErr := s.RefreshAccountState(ctx, reservation.token)
 		if refreshErr != nil {
 			lastRefreshErr = refreshErr
+			if observe != nil {
+				observe(imageAccountSelectionEvent("refresh_failed", reservation.token, before, s.GetAccount(reservation.token), refreshErr))
+			}
 			if cached := s.cachedAccountForTransientRefreshError(reservation.token, refreshErr); cached != nil &&
 				(allow == nil || allow(cached)) &&
 				s.reservedImageSlotAvailable(reservation) {
+				if observe != nil {
+					observe(imageAccountSelectionEvent("selected_cached", reservation.token, before, cached, nil))
+				}
 				return reservation.token, nil
 			}
 		}
 		if account != nil && (allow == nil || allow(account)) && s.reservedImageSlotAvailable(reservation) {
+			if observe != nil {
+				observe(imageAccountSelectionEvent("selected", reservation.token, before, account, nil))
+			}
 			return reservation.token, nil
+		}
+		if observe != nil {
+			observe(imageAccountSelectionEvent("rejected_after_refresh", reservation.token, before, s.GetAccount(reservation.token), refreshErr))
 		}
 		s.releaseImageReservation(reservation.token)
 	}
