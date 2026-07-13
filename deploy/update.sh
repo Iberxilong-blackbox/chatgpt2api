@@ -5,10 +5,12 @@
 #
 #   sudo ./deploy/update.sh                # 构建前端 → 编译后端 → 更新部署
 #   sudo ./deploy/update.sh --env          # 仅更新 .env，重启服务，跳过构建
+#   sudo ./deploy/update.sh --env-set KEY=VALUE  # 设置单个环境变量并重启服务
 #   sudo ./deploy/update.sh --sync-ac # 同步 data/auto_import/ 的账号 JSON 到部署目录并重启
 #
 # 选项:
 #   --env            仅更新 .env 配置文件并重启服务，不做构建编译
+#   --env-set KV    设置运行目录 .env 中的单个环境变量（存在则覆盖，不存在则追加），然后重启服务
 #   --sync-ac        将项目 data/auto_import/ 下的 .json 文件同步到 /opt/chatgpt2api/data/auto_import/ 并重启服务
 
 set -euo pipefail
@@ -137,6 +139,74 @@ if [ "${1:-}" = "--env" ]; then
 
     # 检查状态
     sleep 1
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log_info "服务运行正常"
+    else
+        log_error "服务启动失败，查看日志: journalctl -u ${SERVICE_NAME} -n 50"
+        exit 1
+    fi
+
+    echo ""
+    echo "========== 实时日志（Ctrl+C 退出） =========="
+    journalctl -u "$SERVICE_NAME" -n 20 -f
+    exit 0
+fi
+
+# ============================================================
+# 模式判断：--env-set = 设置单个环境变量并重启
+# ============================================================
+if [ "${1:-}" = "--env-set" ]; then
+    if [ -z "${2:-}" ]; then
+        log_error "用法: $0 --env-set KEY=VALUE"
+        exit 1
+    fi
+
+    env_pair="$2"
+    key="${env_pair%%=*}"
+    value="${env_pair#*=}"
+
+    if [ -z "$key" ] || [ "$key" = "$env_pair" ]; then
+        log_error "格式错误，需要 KEY=VALUE: ${env_pair}"
+        exit 1
+    fi
+
+    env_file="${INSTALL_DIR}/.env"
+
+    if [ ! -f "$env_file" ]; then
+        log_error ".env 文件不存在: ${env_file}"
+        exit 1
+    fi
+
+    # 检查是否已存在该 key（支持 export 前缀）
+    if grep -qE "^(export[[:space:]]+)?${key}=" "$env_file" 2>/dev/null; then
+        # 已存在，用 bash 循环替换（比 sed/awk 更安全地处理特殊字符）
+        tmp_env=$(mktemp) || { log_error "创建临时文件失败"; exit 1; }
+        while IFS= read -r line; do
+            line_key="${line#export }"
+            line_key="${line_key#"${line_key%%[![:space:]]*}"}"
+            line_key="${line_key%%=*}"
+            if [ "$line_key" = "$key" ]; then
+                echo "${key}=${value}"
+            else
+                echo "$line"
+            fi
+        done < "$env_file" > "$tmp_env"
+        mv "$tmp_env" "$env_file"
+        log_info "已更新: ${key}=${value}"
+    else
+        # 不存在，追加
+        echo "${key}=${value}" >> "$env_file"
+        log_info "已新增: ${key}=${value}"
+    fi
+
+    chown "${APP_NAME}:${APP_NAME}" "$env_file"
+    chmod 640 "$env_file"
+
+    # 重启服务
+    log_info "重启服务 ${SERVICE_NAME}..."
+    systemctl restart "$SERVICE_NAME"
+    sleep 1
+
     if systemctl is-active --quiet "$SERVICE_NAME"; then
         log_info "服务运行正常"
     else

@@ -282,10 +282,15 @@ sudo ./deploy/update.sh
 # 方案 B：仅改动了 .env —— 直接更新配置并重启，跳过构建编译（省时）
 sudo ./deploy/update.sh --env
 
+# 方案 C：快速设置单个环境变量并重启（存在则覆盖，不存在则追加）
+sudo ./deploy/update.sh --env-set CHATGPT2API_SENTINEL_DEBUG=true
+
 # 同步新账号
 sudo ./deploy/update.sh --sync-ac
 
 ```
+
+> `--env-set` 直接修改运行目录 `/opt/chatgpt2api/.env`，不会影响源码目录的 `.env`。适合快速开关调试日志、修改超时等场景。
 
 > 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离。当前模板只额外允许写入 `/opt/chatgpt2api/data` 和 `/opt/chatgpt2api/.env`，用于运行数据和设置页保存配置。
 
