@@ -86,6 +86,7 @@ func (e *Engine) HandleImageEdits(ctx context.Context, body map[string]any, imag
 		OwnerID:                util.Clean(body["owner_id"]),
 		OwnerName:              util.Clean(body["owner_name"]),
 		FrontendConversationID: util.Clean(body["frontend_conversation_id"]),
+		ImageCallTrace:         ImageCallTraceFromPayload(body),
 		FallbackReferenceImage: util.Clean(body["fallback_reference_image_b64"]),
 		Messages:               NormalizeMessages(util.AsMapSlice(body["messages"]), nil),
 		Images:                 encoded,

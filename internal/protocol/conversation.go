@@ -585,6 +585,9 @@ func (e *Engine) runSingleImageOutput(ctx context.Context, out chan<- ImageOutpu
 	for {
 		token, err := e.nextImageAccessToken(ctx, preferredToken, request.ImageCallTrace)
 		if err != nil {
+			if request.ImageCallTrace != nil {
+				request.ImageCallTrace.AddAttempt(map[string]any{"stage": "selection_failed", "error": err.Error()})
+			}
 			result.lastError = err.Error()
 			result.err = NewImageGenerationError(err.Error())
 			return result
