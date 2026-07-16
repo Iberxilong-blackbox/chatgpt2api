@@ -543,8 +543,19 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const safePage = Math.min(page, pageCount);
   const startIndex = (safePage - 1) * Number(pageSize);
   const currentRows = filteredAccounts.slice(startIndex, startIndex + Number(pageSize));
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const allCurrentSelected =
-    currentRows.length > 0 && currentRows.every((row) => selectedIds.includes(row.id));
+    currentRows.length > 0 && currentRows.every((row) => selectedIdSet.has(row.id));
+  const someCurrentSelected = currentRows.some((row) => selectedIdSet.has(row.id));
+  const currentSelectState: boolean | "indeterminate" = allCurrentSelected
+    ? true
+    : someCurrentSelected
+      ? "indeterminate"
+      : false;
+  const allFilteredSelected =
+    filteredAccounts.length > 0 && filteredAccounts.every((row) => selectedIdSet.has(row.id));
+  const allAccountsSelected =
+    accounts.length > 0 && accounts.every((row) => selectedIdSet.has(row.id));
   const showInitialEmptyState = !isLoading && accounts.length === 0;
   const showFilteredEmptyState = !isLoading && accounts.length > 0 && currentRows.length === 0;
 
@@ -867,6 +878,23 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
       return;
     }
     setSelectedIds((prev) => prev.filter((id) => !currentRows.some((row) => row.id === id)));
+  };
+
+  const toggleSelectAllFiltered = (checked: boolean) => {
+    if (checked) {
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...filteredAccounts.map((item) => item.id)])));
+      return;
+    }
+    const filteredIdSet = new Set(filteredAccounts.map((item) => item.id));
+    setSelectedIds((prev) => prev.filter((id) => !filteredIdSet.has(id)));
+  };
+
+  const selectAllAccounts = () => {
+    setSelectedIds(accounts.map((item) => item.id));
+  };
+
+  const clearSelection = () => {
+    setSelectedIds([]);
   };
 
   const toggleAccountSelection = (accountId: string, checked: boolean) => {
@@ -1635,12 +1663,37 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
               <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
                 <div className="flex items-center gap-2 rounded-lg bg-stone-100 px-2.5 py-1 text-xs font-medium text-stone-600">
                   <Checkbox
-                    checked={allCurrentSelected}
+                    checked={currentSelectState}
                     onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
                     aria-label="选择当前页账号"
                   />
                   当前页全选
                 </div>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                  onClick={() => toggleSelectAllFiltered(!allFilteredSelected)}
+                  disabled={filteredAccounts.length === 0}
+                >
+                  {allFilteredSelected ? "取消筛选全选" : `全选当前筛选 (${filteredAccounts.length})`}
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-8 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                  onClick={() => (allAccountsSelected ? clearSelection() : selectAllAccounts())}
+                  disabled={accounts.length === 0}
+                >
+                  {allAccountsSelected ? "取消全选" : `全选全部 (${accounts.length})`}
+                </Button>
+                {selectedIds.length > 0 ? (
+                  <Button
+                    variant="ghost"
+                    className="h-8 rounded-lg px-3 text-stone-600 hover:bg-stone-100"
+                    onClick={clearSelection}
+                  >
+                    清空选择
+                  </Button>
+                ) : null}
                 {canRefreshAccounts ? (
                   <Button
                     variant="ghost"
@@ -1719,7 +1772,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                       disabled={selectedAccountIds.length === 0 || isDeleting}
                     >
                       {isDeleting ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
-                      删除所选
+                      删除所选{selectedAccountIds.length > 0 ? ` (${selectedAccountIds.length})` : ""}
                     </Button>
                   </>
                 ) : null}
@@ -1751,7 +1804,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                       <TableRow>
                         <TableHead className="w-12">
                           <Checkbox
-                            checked={allCurrentSelected}
+                            checked={currentSelectState}
                             onCheckedChange={(checked) => toggleSelectAll(Boolean(checked))}
                             aria-label="选择当前页账号"
                           />

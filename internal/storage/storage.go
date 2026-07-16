@@ -229,22 +229,23 @@ func (b *DatabaseBackend) saveRows(table, keyColumn string, items []map[string]a
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if _, err := tx.Exec("DELETE FROM " + table); err != nil {
-		return err
-	}
 	sourceKey := "access_token"
 	if table == "auth_keys" {
 		sourceKey = "id"
 	}
-	stmtText := "INSERT INTO " + table + " (" + keyColumn + ", data) VALUES (?, ?)"
+	stmtText := "INSERT OR REPLACE INTO " + table + " (" + keyColumn + ", data) VALUES (?, ?)"
 	if b.driver == "postgres" {
-		stmtText = "INSERT INTO " + table + " (" + keyColumn + ", data) VALUES ($1, $2)"
+		stmtText = "INSERT INTO " + table + " (" + keyColumn + ", data) VALUES ($1, $2) ON CONFLICT (" + keyColumn + ") DO UPDATE SET data = EXCLUDED.data"
+	}
+	if b.driver == "mysql" {
+		stmtText = "INSERT INTO " + table + " (" + keyColumn + ", data) VALUES (?, ?) ON DUPLICATE KEY UPDATE data = VALUES(data)"
 	}
 	stmt, err := tx.Prepare(stmtText)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
+	savedKeys := make([]string, 0, len(items))
 	for _, item := range items {
 		key := strings.TrimSpace(fmt.Sprint(item[sourceKey]))
 		if key == "" {
@@ -255,6 +256,20 @@ func (b *DatabaseBackend) saveRows(table, keyColumn string, items []map[string]a
 			continue
 		}
 		if _, err := stmt.Exec(key, string(data)); err != nil {
+			return err
+		}
+		savedKeys = append(savedKeys, key)
+	}
+	// Remove rows that are no longer in the item set.
+	if len(savedKeys) > 0 {
+		placeholders := make([]string, len(savedKeys))
+		args := make([]interface{}, len(savedKeys))
+		for i, k := range savedKeys {
+			placeholders[i] = b.placeholder(i + 1)
+			args[i] = k
+		}
+		deleteSQL := "DELETE FROM " + table + " WHERE " + keyColumn + " NOT IN (" + strings.Join(placeholders, ", ") + ")"
+		if _, err := tx.Exec(deleteSQL, args...); err != nil {
 			return err
 		}
 	}

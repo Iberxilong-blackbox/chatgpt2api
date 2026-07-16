@@ -243,15 +243,42 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 		indexed[token] = util.CopyMap(item)
 		order = append(order, token)
 	}
-	added, skipped := 0, 0
+	added, skipped, updated := 0, 0, 0
 	for _, record := range cleaned {
 		token := util.Clean(record["access_token"])
 		current, ok := indexed[token]
 		if ok {
 			skipped++
 		} else {
-			added++
-			current = map[string]any{}
+			// Dedup by email / user_id: same identity with a different
+			// access_token merges into the existing account instead of
+			// creating a duplicate.
+			email := strings.ToLower(util.Clean(record["email"]))
+			userID := util.Clean(record["user_id"])
+			if email != "" || userID != "" {
+				for existingToken, existing := range indexed {
+					if email != "" && strings.ToLower(util.Clean(existing["email"])) == email {
+						ok = true
+						current = existing
+						delete(indexed, existingToken)
+						order = removeString(order, existingToken)
+						break
+					}
+					if userID != "" && util.Clean(existing["user_id"]) == userID {
+						ok = true
+						current = existing
+						delete(indexed, existingToken)
+						order = removeString(order, existingToken)
+						break
+					}
+				}
+			}
+			if ok {
+				updated++
+			} else {
+				added++
+				current = map[string]any{}
+			}
 			order = append(order, token)
 		}
 		updates := map[string]any{"access_token": token, "type": util.ValueOr(current["type"], "Free")}
@@ -321,13 +348,23 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 	_ = s.saveLocked()
 	items := publicAccounts(s.items)
 	s.mu.Unlock()
-	s.logs.Add(fmt.Sprintf("新增 %d 个账号，跳过 %d 个", added, skipped), map[string]any{
+	s.logs.Add(fmt.Sprintf("新增 %d 个账号，更新 %d 个，跳过 %d 个", added, updated, skipped), map[string]any{
 		"module":         "accounts",
 		"operation_type": "新增",
 		"added":          added,
+		"updated":        updated,
 		"skipped":        skipped,
 	})
-	return map[string]any{"added": added, "skipped": skipped, "items": items}
+	return map[string]any{"added": added, "updated": updated, "skipped": skipped, "items": items}
+	}
+
+func removeString(slice []string, s string) []string {
+	for i, v := range slice {
+		if v == s {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
 }
 
 func (s *AccountService) AddAccountFromSession(sessionJSON string) (map[string]any, error) {
@@ -1477,6 +1514,13 @@ func (s *AccountService) StartLimitedWatcher(ctx context.Context, interval time.
 			case <-ctx.Done():
 				return
 			case <-timer.C:
+				s.reservoirMu.Lock()
+				paused := s.reservoirPaused
+				s.reservoirMu.Unlock()
+				if paused {
+					timer.Reset(interval)
+					continue
+				}
 				tokens := s.listRefreshableLimitedTokens(time.Now())
 				if len(tokens) > 0 {
 					s.RefreshAccounts(ctx, tokens)
@@ -1513,6 +1557,12 @@ func (s *AccountService) StartDailyRefreshWatcher(ctx context.Context, cfg Daily
 				timer.Stop()
 				return
 			case <-timer.C:
+			}
+			s.reservoirMu.Lock()
+			paused := s.reservoirPaused
+			s.reservoirMu.Unlock()
+			if paused {
+				continue
 			}
 			if !cfg.DailyAccountRefreshEnabled() {
 				continue
