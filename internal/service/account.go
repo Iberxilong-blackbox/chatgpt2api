@@ -75,7 +75,7 @@ type AccountService struct {
 const (
 	defaultRemoteUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
 	defaultRemoteSecCHUA   = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
-	defaultRemoteProfile   = "chrome145"
+	defaultRemoteProfile   = "chrome133"
 )
 
 func NewAccountService(backend storage.Backend, config AccountConfig, proxy *ProxyService, logs *LogService) *AccountService {
@@ -2220,16 +2220,16 @@ func prepareAccountFP(record map[string]any) map[string]any {
 	// Case 3: No fingerprint at all — auto-generate default
 	fp["oai-device-id"] = util.NewUUID()
 	fp["oai-session-id"] = util.NewUUID()
-	fp["impersonate"] = "chrome145"
-	fp["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-	fp["sec-ch-ua"] = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
+	fp["impersonate"] = "chrome133"
+	fp["user-agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	fp["sec-ch-ua"] = `"Not:A-Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`
 	fp["sec-ch-ua-mobile"] = "?0"
 	fp["sec-ch-ua-platform"] = `"Windows"`
 	return fp
 }
 
 // detectImpersonateFromUA extracts the impersonation profile string from a User-Agent.
-// Returns "chrome{MAJOR}" for Chrome-based UAs, default "chrome145" otherwise.
+// Returns "chrome{MAJOR}" for Chrome-based UAs, default "chrome133" otherwise.
 func detectImpersonateFromUA(ua string) string {
 	prefix := "Chrome/"
 	if idx := strings.Index(ua, prefix); idx >= 0 {
@@ -2240,7 +2240,7 @@ func detectImpersonateFromUA(ua string) string {
 			}
 		}
 	}
-	return "chrome145"
+	return "chrome133"
 }
 
 func cleanAccountRecords(records []map[string]any) []map[string]any {

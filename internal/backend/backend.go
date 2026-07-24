@@ -26,16 +26,16 @@ const (
 	DefaultClientVersion     = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
 	DefaultClientBuildNumber = "5955942"
 
-	browserUserAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-	browserSecCHUA                = `"Not:A-Brand";v="99", "Google Chrome";v="145", "Chromium";v="145"`
-	browserSecCHUAFullVersion     = `"145.0.0.0"`
-	browserSecCHUAFullVersionList = `"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="145.0.0.0", "Chromium";v="145.0.0.0"`
+	browserUserAgent              = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	browserSecCHUA                = `"Not:A-Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`
+	browserSecCHUAFullVersion     = `"133.0.0.0"`
+	browserSecCHUAFullVersionList = `"Not:A-Brand";v="99.0.0.0", "Google Chrome";v="133.0.0.0", "Chromium";v="133.0.0.0"`
 	browserSecCHUAMobile          = "?0"
 	browserSecCHUAPlatform        = `"Windows"`
 	browserSecCHUAPlatformVersion = `"19.0.0"`
 	browserSecCHUAArch            = `"x86"`
 	browserSecCHUABitness         = `"64"`
-	browserImpersonationProfile   = "chrome145"
+	browserImpersonationProfile   = "chrome133"
 )
 
 var sentinelDebugEnabled = false

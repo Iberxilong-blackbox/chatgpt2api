@@ -125,7 +125,11 @@ func applyBrowserProfile(builder *surf.Builder, profile string) *surf.Builder {
 	if strings.Contains(normalized, "firefox") || strings.Contains(normalized, "ff") {
 		return impersonate.Firefox()
 	}
-	return impersonate.Chrome()
+	b := impersonate.Chrome()
+	// Override TLS fingerprint: surf's hand-crafted Chrome 145 spec is detectable by
+	// Cloudflare; use uTLS's HelloChrome_Auto (= Chrome 133, extracted from real traffic).
+	b.JA().Chrome()
+	return b
 }
 
 func transportForProxy(candidate string) *http.Transport {
