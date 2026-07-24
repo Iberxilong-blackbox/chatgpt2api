@@ -1459,6 +1459,13 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 		return nil, init.err
 	}
 	limits := anyList(init.payload["limits_progress"])
+	s.logs.Add("diag_limits_raw", map[string]any{
+		"module":         "accounts",
+		"operation_type": "诊断",
+		"token":          util.AnonymizeToken(accessToken),
+		"limits_len":     len(limits),
+		"limits_raw":     fmt.Sprintf("%+v", init.payload["limits_progress"]),
+	})
 	accountType := s.detectAccountType(accessToken, me.payload, init.payload)
 	quota, restoreAt, unknown := extractQuotaAndRestoreAt(limits)
 	chatGPTAccountID := firstNonEmpty(
