@@ -261,3 +261,90 @@ b.JA().Chrome()  // = HelloChrome_Auto = HelloChrome_133
 ### 关于版本号的认知纠正
 
 Chrome 145 是真实存在的版本（Chrome 版本号迭代很快）。问题不在于 Chrome 145 不存在，而在于 **surf 库手工拼的 `HelloChrome_145` TLS 参数没有完全复现真实 Chrome 145 的 TLS 指纹特征**。Cloudflare 更新的 WAF 检测模型识别到了这个偏差。
+
+---
+
+## 实验记录
+
+### 实验 1：uTLS Chrome 133 覆盖 TLS 指纹 — ❌ 仍然 403
+
+**时间**：2026-07-24
+
+**假设**：uTLS 从真实 Chrome 133 抓包提取的 `HelloChrome_Auto` 指纹替换 surf 手工拼的 `HelloChrome_145` 即可绕过 Cloudflare。
+
+**改动**：`applyBrowserProfile()` 中 `impersonate.Chrome()` 后追加 `b.JA().Chrome()`
+
+**编译**：通过（go build + go test 全部 OK）
+
+**前置验证 — IP 是否被封锁**：
+
+| 测试 | 结果 |
+|------|------|
+| `curl --socks5-hostname 127.0.0.1:10086 https://chatgpt.com/` | 200 正常 |
+| `curl https://chatgpt.com/` | 200 正常 |
+| WARP 出口 IP | `107.170.226.114` |
+| 服务器本机 IP | `45.15.124.192` |
+
+**结论：两个 IP 都干净，未被 Cloudflare 封锁。**
+
+**部署后结果**：刷新账号仍然 `HTTP 403, upstream returned Cloudflare challenge page`
+
+**middleware 执行顺序分析**：
+- surf 的 `JA().build()` 中 `addCliMW(func(*Client) error, math.MaxInt)` → 两个 middleware 同优先级，按插入顺序执行
+- Chrome145 middleware order=0 → 先执行，Chrome133 middleware order=1 → 后执行
+- Chrome133 的 `c.GetClient().Transport = newRoundTripper(j, c.GetTransport())` 覆盖了 Chrome145 的 roundtripper
+- **代码逻辑确认正确，修复已生效**
+
+**失败原因推测**：surf 的 `impersonate.Chrome()` 体内还设置了 H2 SETTINGS（Chrome 145 参数）和 header 构建函数，这些与 uTLS Chrome 133 的 TLS 参数一起使用时可能产生不一致，在 H2 connection preface 阶段被 Cloudflare 检测到。
+
+---
+
+### 后续尝试方向（按优先级）
+
+#### 方向 1：JA().Firefox148() — Firefox 指纹生态系 🔜 待尝试
+
+**原理**：Firefox 使用完全不同的 TLS 指纹、ALPN 行为和 H2 SETTINGS 参数，Cloudflare 对 Chrome 的检测规则可能对 Firefox 不适用。
+
+**操作**：将 `impersonate.Chrome()` 改为 `impersonate.Firefox()`。surf 中 Firefox 148 的 H2 SETTINGS 也是专为 Firefox 设计的，不存在 Chrome 混用问题。
+
+**风险**：Firefox 不支持 Sec-CH-UA headers，HTTP headers 层面可能与账号配置中的 UA 产生不匹配。
+
+---
+
+#### 方向 2：JA().Firefox() — uTLS 真实 Firefox 指纹覆盖 🆕 待尝试
+
+**原理**：与方向 1 类似，但用 uTLS 内置的 `HelloFirefox_Auto` 覆盖 surf 手工的 `HelloChrome_145`，获得真实 Firefox 的 TLS 指纹。同时 surf `impersonate.Chrome()` 设置的 Chrome H2 SETTINGS 不会被 Firefox TLS 覆盖（因为只覆盖了 TLS spec）。
+
+**操作**：在 `impersonate.Chrome()` 之后 `b.JA().Firefox()` 而非 `b.JA().Chrome()`
+
+**注意**：这会产生 TLS=Fox, H2=Chrome 的混合指纹，可能比单一指纹更容易被检测。
+
+---
+
+#### 方向 3：surf JA().Randomized() — 完全随机 TLS 指纹 🆕 待尝试
+
+**原理**：随机化 TLS ClientHello 参数，Cloudflare 的规则匹配通常是针对固定指纹的，随机化可能绕过。
+
+**操作**：在 `impersonate.Chrome()` 之后 `b.JA().Randomized()`
+
+**风险**：Cloudflare 对完全随机的指纹也可能标记为可疑（真实浏览器不会随机化）。
+
+---
+
+#### 方向 4：绕过 surf impersonate 层，直接构建 uTLS 客户端 🆕 待尝试
+
+**原理**：surf 的 `impersonate.Chrome()` 负责设置 TLS spec + H2 SETTINGS + H3 SETTINGS + headers，而我们只覆盖 TLS spec 一项。如果问题出在 H2 SETTINGS 层面，需要彻底绕过 surf 的 impersonate 流程。
+
+**操作**：在 `proxy.go` 中新增一个函数，直接用 uTLS + socks5 transport 构建 HTTP client，不经过 surf 的 `Impersonate().Chrome()` 链路。这能确保从 TLS 到 H2 到 headers 所有层面都干净一致。
+
+**复杂度**：较高，需要直接操作 `utls.Config` 和 `net/http.Transport`
+
+---
+
+#### 方向 5：升级 surf 库至最新 🆕 待尝试
+
+**原理**：surf v1.0.202 重构了 profiles 结构（从手动拼的 `HelloChrome_145` 改为了基于真实流量的 uTLS built-in spec），可能整体修复了 Cloudflare 兼容性问题。
+
+**操作**：升级 `go.mod` 中 surf 版本并升级 Go 版本（surf v1.0.202 要求 Go ≥ 1.27）
+
+**风险**：需要升级 Go，可能引入其他兼容性问题

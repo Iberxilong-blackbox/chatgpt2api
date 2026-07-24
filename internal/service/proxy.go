@@ -125,11 +125,10 @@ func applyBrowserProfile(builder *surf.Builder, profile string) *surf.Builder {
 	if strings.Contains(normalized, "firefox") || strings.Contains(normalized, "ff") {
 		return impersonate.Firefox()
 	}
-	b := impersonate.Chrome()
-	// Override TLS fingerprint: surf's hand-crafted Chrome 145 spec is detectable by
-	// Cloudflare; use uTLS's HelloChrome_Auto (= Chrome 133, extracted from real traffic).
-	b.JA().Chrome()
-	return b
+	// Experiment 2: Chrome fingerprint ecosystem (TLS + H2 SETTINGS) is under active
+	// Cloudflare detection. Try Firefox impersonation — different TLS fingerprint family,
+	// different H2 SETTINGS, different headers. Fully coherent within the Firefox ecosystem.
+	return impersonate.Firefox()
 }
 
 func transportForProxy(candidate string) *http.Transport {
