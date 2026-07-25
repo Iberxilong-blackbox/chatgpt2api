@@ -1,4 +1,4 @@
-package storage
+﻿package storage
 
 import (
 	"context"
@@ -270,6 +270,10 @@ func (b *DatabaseBackend) saveRows(table, keyColumn string, items []map[string]a
 		}
 		deleteSQL := "DELETE FROM " + table + " WHERE " + keyColumn + " NOT IN (" + strings.Join(placeholders, ", ") + ")"
 		if _, err := tx.Exec(deleteSQL, args...); err != nil {
+			return err
+		}
+	} else {
+		if _, err := tx.Exec("DELETE FROM " + table); err != nil {
 			return err
 		}
 	}

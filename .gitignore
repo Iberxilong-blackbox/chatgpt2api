@@ -4,6 +4,8 @@ build/
 dist/
 web_dist
 chatgpt2api.exe
+chatgpt2api_linux
+internal.exe
 .omx/
 .codex/
 venv/

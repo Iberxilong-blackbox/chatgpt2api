@@ -295,56 +295,56 @@ Chrome 145 是真实存在的版本（Chrome 版本号迭代很快）。问题�
 - Chrome133 的 `c.GetClient().Transport = newRoundTripper(j, c.GetTransport())` 覆盖了 Chrome145 的 roundtripper
 - **代码逻辑确认正确，修复已生效**
 
-**失败原因推测**：surf 的 `impersonate.Chrome()` 体内还设置了 H2 SETTINGS（Chrome 145 参数）和 header 构建函数，这些与 uTLS Chrome 133 的 TLS 参数一起使用时可能产生不一致，在 H2 connection preface 阶段被 Cloudflare 检测到。
+**失败原因分析**：实验 2 的成功反证了此处的根因——问题不在 TLS ClientHello 指纹单独一项，而在 **整个 Chrome 指纹生态系（TLS + H2 SETTINGS + H3 SETTINGS + headers）** 的共同特征被 Cloudflare 模型识别。实验 1 只替换了 TLS spec 为 uTLS 真实 Chrome 133，但 surf `impersonate.Chrome()` 内部设置的 Chrome 145 H2 SETTINGS（HeaderTableSize=65536, InitialWindowSize=6291456, MaxHeaderListSize=262144, ConnectionFlow=15663105 等）和 Chrome 风格 header 构建方式仍然保留，Cloudflare 在 H2 connection preface 阶段检测到了 Chrome 系特征并将请求拦截。
 
 ---
 
-### 后续尝试方向（按优先级）
+### 实验 2：surf Firefox impersonation — ✅ 成功绕过 403
 
-#### 方向 1：JA().Firefox148() — Firefox 指纹生态系 🔜 待尝试
+**时间**：2026-07-24
 
-**原理**：Firefox 使用完全不同的 TLS 指纹、ALPN 行为和 H2 SETTINGS 参数，Cloudflare 对 Chrome 的检测规则可能对 Firefox 不适用。
+**假设**：Cloudflare 的检测针对 Chrome 指纹生态系整体（TLS + H2 SETTINGS + headers），换用 Firefox 生态系可以完全避开。
 
-**操作**：将 `impersonate.Chrome()` 改为 `impersonate.Firefox()`。surf 中 Firefox 148 的 H2 SETTINGS 也是专为 Firefox 设计的，不存在 Chrome 混用问题。
+**改动**：`applyBrowserProfile()` 中将 `impersonate.Chrome()` 替换为 `impersonate.Firefox()`
 
-**风险**：Firefox 不支持 Sec-CH-UA headers，HTTP headers 层面可能与账号配置中的 UA 产生不匹配。
+```go
+// internal/service/proxy.go — applyBrowserProfile()
+// Experiment 2: Chrome fingerprint ecosystem is under active Cloudflare detection.
+// Try Firefox impersonation — different TLS fingerprint family, different H2 SETTINGS,
+// different headers. Fully coherent within the Firefox ecosystem.
+return impersonate.Firefox()
+```
 
----
+surf 的 `Impersonate().Firefox()` 内部使用：
+- **TLS**：uTLS `HelloFirefox_148`（从真实 Firefox 148 流量提取）
+- **H2 SETTINGS**：Firefox 参数（InitialWindowSize=131072, MaxFrameSize=16384, ConnectionFlow=12517377 等，与 Chrome 完全不同）
+- **Headers**：Firefox 风格（无 Sec-CH-UA，Accept-Encoding=gzip/deflate/br/zstd，Accept-Language=en-US,en;q=0.5）
+- **JA3/JA4/Peetprint**：全部是 Firefox 的真实指纹值
 
-#### 方向 2：JA().Firefox() — uTLS 真实 Firefox 指纹覆盖 🆕 待尝试
+**部署**：Desi 服务器，commit `cb0560a`，`sudo ./deploy/update.sh`
 
-**原理**：与方向 1 类似，但用 uTLS 内置的 `HelloFirefox_Auto` 覆盖 surf 手工的 `HelloChrome_145`，获得真实 Firefox 的 TLS 指纹。同时 surf `impersonate.Chrome()` 设置的 Chrome H2 SETTINGS 不会被 Firefox TLS 覆盖（因为只覆盖了 TLS spec）。
+**结果**：✅ **刷新账号成功，不再报 403 Cloudflare challenge page**
 
-**操作**：在 `impersonate.Chrome()` 之后 `b.JA().Firefox()` 而非 `b.JA().Chrome()`
+**根因结论**：Cloudflare 的检测不是针对单个 TLS 指纹参数，而是针对 **完整的浏览器连接特征集**（TLS ClientHello + H2 connection preface + HTTP headers 组合）。surf 的 `Impersonate().Chrome()` 构建的整套 Chrome 145 特征被整体识别为假浏览器。换成 Firefox 生态系后，所有层面的特征都来自真实 Firefox，Cloudflare 无法区分。
 
-**注意**：这会产生 TLS=Fox, H2=Chrome 的混合指纹，可能比单一指纹更容易被检测。
-
----
-
-#### 方向 3：surf JA().Randomized() — 完全随机 TLS 指纹 🆕 待尝试
-
-**原理**：随机化 TLS ClientHello 参数，Cloudflare 的规则匹配通常是针对固定指纹的，随机化可能绕过。
-
-**操作**：在 `impersonate.Chrome()` 之后 `b.JA().Randomized()`
-
-**风险**：Cloudflare 对完全随机的指纹也可能标记为可疑（真实浏览器不会随机化）。
-
----
-
-#### 方向 4：绕过 surf impersonate 层，直接构建 uTLS 客户端 🆕 待尝试
-
-**原理**：surf 的 `impersonate.Chrome()` 负责设置 TLS spec + H2 SETTINGS + H3 SETTINGS + headers，而我们只覆盖 TLS spec 一项。如果问题出在 H2 SETTINGS 层面，需要彻底绕过 surf 的 impersonate 流程。
-
-**操作**：在 `proxy.go` 中新增一个函数，直接用 uTLS + socks5 transport 构建 HTTP client，不经过 surf 的 `Impersonate().Chrome()` 链路。这能确保从 TLS 到 H2 到 headers 所有层面都干净一致。
-
-**复杂度**：较高，需要直接操作 `utls.Config` 和 `net/http.Transport`
+**副作用**：Firefox 冒充的 header 集合中不含 `Sec-CH-UA` / `Sec-CH-UA-Mobile` / `Sec-CH-UA-Platform` 等 Chromium 特有 headers，但 Cloudflare 对此容忍（非 Chromium 浏览器本身就没有这些 header）。
 
 ---
 
-#### 方向 5：升级 surf 库至最新 🆕 待尝试
+### 后续方向（已废弃的实验方案，存档备查）
 
-**原理**：surf v1.0.202 重构了 profiles 结构（从手动拼的 `HelloChrome_145` 改为了基于真实流量的 uTLS built-in spec），可能整体修复了 Cloudflare 兼容性问题。
+#### ~~方向 3：surf JA().Randomized()~~ （不需要）
 
-**操作**：升级 `go.mod` 中 surf 版本并升级 Go 版本（surf v1.0.202 要求 Go ≥ 1.27）
+#### ~~方向 4：绕过 surf impersonate 层~~ （不需要）
 
-**风险**：需要升级 Go，可能引入其他兼容性问题
+#### ~~方向 5：升级 surf 库至最新~~ （不需要）
+
+---
+
+## 最终解决方案（2026-07-24）
+
+**根因**：Cloudflare 对 surf 库的 Chrome 145 impersonation 特征集（TLS + H2 + Headers）建立了整体检测模型。
+
+**修复**：`internal/service/proxy.go` 中 `applyBrowserProfile()` 将默认冒充从 `impersonate.Chrome()` 替换为 `impersonate.Firefox()`。
+
+**效果**：Firefox 生态系的 TLS 指纹 + H2 SETTINGS + HTTP headers 三者一致，全部来自真实 Firefox 流量，Cloudflare 无法识别为自动化工具。
