@@ -245,6 +245,9 @@ export type Account = {
   lastNonzeroQuota?: number;
   importedAt?: string | null;
   refreshCooldownUntil?: string | null;
+  lastRefreshError?: string | null;
+  lastRefreshErrorStage?: string | null;
+  lastRefreshErrorAt?: string | null;
   zeroQuotaRefreshCount?: number;
   reservoirLayer?: string;
   warmingStatus?: string | null;
@@ -280,6 +283,7 @@ type AccountMutationResponse = {
   refreshed?: number;
   session_refreshed?: number;
   session_failed?: number;
+  session_validation_failed?: number;
   errors?: Array<{ access_token?: string; account_id?: string; error: string }>;
   results?: AccountRefreshResult[];
   total?: number;
@@ -319,6 +323,9 @@ export type AccountRefreshResult = {
 type AccountRefreshResponse = {
   items: Account[];
   refreshed: number;
+  session_refreshed?: number;
+  session_failed?: number;
+  session_validation_failed?: number;
   errors: Array<{ access_token?: string; account_id?: string; error: string }>;
   results: AccountRefreshResult[];
   total?: number;

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"chatgpt2api/internal/util"
 )
 
 type testAccountConfig struct{}
@@ -305,6 +307,84 @@ func TestRefreshAccountsReturnsEmptyErrorsArray(t *testing.T) {
 	}
 	if string(payload.Errors) != "[]" {
 		t.Fatalf("encoded errors = %s, want []", payload.Errors)
+	}
+}
+
+func TestRefreshAccountsReportsSessionValidationFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>ok</html>"))
+		case "/backend-api/me":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte("Could not parse your authentication token. Please try signing in again."))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	accounts := newTestAccountService(t)
+	accounts.remoteBaseURL = server.URL
+	accounts.browserHTTPClient = func(string, time.Duration) *http.Client {
+		return server.Client()
+	}
+	accounts.refresher = NewSessionRefresher(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"accessToken":"new-access-token","sessionToken":"new-session-token","expires":"2026-08-20T00:00:00Z"}`)),
+		}, nil
+	})
+	accounts.AddAccountRecords([]map[string]any{{
+		"access_token":  "old-access-token",
+		"session_token": "old-session-token",
+		"quota":         0,
+	}})
+
+	result := accounts.RefreshAccounts(context.Background(), []string{"old-access-token"})
+	if result["refreshed"] != 0 {
+		t.Fatalf("refreshed = %#v, want 0", result["refreshed"])
+	}
+	if result["session_refreshed"] != 1 {
+		t.Fatalf("session_refreshed = %#v, want 1", result["session_refreshed"])
+	}
+	if result["session_failed"] != 0 {
+		t.Fatalf("session_failed = %#v, want 0", result["session_failed"])
+	}
+	if result["session_validation_failed"] != 1 {
+		t.Fatalf("session_validation_failed = %#v, want 1", result["session_validation_failed"])
+	}
+	if result["failed"] != 1 {
+		t.Fatalf("failed = %#v, want 1", result["failed"])
+	}
+
+	details, ok := result["results"].([]map[string]any)
+	if !ok || len(details) != 1 {
+		t.Fatalf("results = %#v, want one result", result["results"])
+	}
+	if details[0]["success"] != false || details[0]["status"] != "error" {
+		t.Fatalf("detail = %#v, want failed validation result", details[0])
+	}
+	if !strings.Contains(util.Clean(details[0]["error"]), "阶段: me") {
+		t.Fatalf("detail error = %#v, want me stage", details[0]["error"])
+	}
+
+	account := accounts.GetAccount("new-access-token")
+	if account == nil {
+		t.Fatal("new access token account missing")
+	}
+	if account["status"] != "异常" || account["image_quota_unknown"] != true {
+		t.Fatalf("account = %#v, want abnormal unknown-quota account", account)
+	}
+	if account["quota_checked_at"] != nil {
+		t.Fatalf("quota_checked_at = %#v, want nil after failed validation", account["quota_checked_at"])
+	}
+	if account["last_refresh_error_stage"] != "me" {
+		t.Fatalf("last_refresh_error_stage = %#v, want me", account["last_refresh_error_stage"])
+	}
+	if !strings.Contains(util.Clean(account["last_refresh_error"]), "/backend-api/me failed: HTTP 401") {
+		t.Fatalf("last_refresh_error = %#v, want HTTP 401 detail", account["last_refresh_error"])
 	}
 }
 

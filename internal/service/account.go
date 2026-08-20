@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -545,11 +546,15 @@ func (s *AccountService) UpdateAccount(accessToken string, updates map[string]an
 	if idx < 0 {
 		return nil
 	}
-	if _, ok := updates["quota"]; ok && updates["quota_checked_at"] == nil {
-		updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+	if _, ok := updates["quota"]; ok {
+		if _, hasQuotaCheckedAt := updates["quota_checked_at"]; !hasQuotaCheckedAt {
+			updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+		}
 	}
-	if _, ok := updates["image_quota_unknown"]; ok && updates["quota_checked_at"] == nil {
-		updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+	if _, ok := updates["image_quota_unknown"]; ok {
+		if _, hasQuotaCheckedAt := updates["quota_checked_at"]; !hasQuotaCheckedAt {
+			updates = mergeMaps(updates, map[string]any{"quota_checked_at": util.NowISO()})
+		}
 	}
 	merged := mergeMaps(s.items[idx], updates, map[string]any{"access_token": accessToken})
 	if delta := util.ToInt(merged["zero_quota_refresh_count_delta"], 0); delta != 0 {
@@ -734,10 +739,14 @@ func (s *AccountService) refreshAccountViaSessionAsync(accessToken, sessionToken
 
 		newAccessToken, newSessionToken, newExpires, err := s.refresher.RefreshToken(ctx, accessToken, sessionToken)
 		if err != nil {
-			s.UpdateAccount(accessToken, map[string]any{"status": "异常"})
+			s.recordAccountRefreshFailure(accessToken, "session_refresh", err)
 			return
 		}
-		s.RefreshAccountViaSession(accessToken, newAccessToken, newSessionToken, newExpires)
+		if !s.RefreshAccountViaSession(accessToken, newAccessToken, newSessionToken, newExpires) {
+			s.recordAccountRefreshFailure(accessToken, "session_refresh", fmt.Errorf("账号更新失败"))
+			return
+		}
+		_ = s.refreshAccountInfoAfterSession(ctx, newAccessToken)
 	}()
 }
 
@@ -786,7 +795,10 @@ func (s *AccountService) TrySyncRefresh(accessToken string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	s.RefreshAccountViaSession(accessToken, newAT, newST, newExp)
+	if !s.RefreshAccountViaSession(accessToken, newAT, newST, newExp) {
+		return "", false
+	}
+	_ = s.refreshAccountInfoAfterSession(ctx, newAT)
 	s.markRefreshed(accessToken)
 	return newAT, true
 }
@@ -990,6 +1002,9 @@ func accountRefreshSuccessUpdates(remote map[string]any) map[string]any {
 	updates := util.CopyMap(remote)
 	now := util.NowISO()
 	updates["quota_checked_at"] = now
+	updates["last_refresh_error"] = nil
+	updates["last_refresh_error_stage"] = nil
+	updates["last_refresh_error_at"] = nil
 	quota := util.ToInt(updates["quota"], 0)
 	unknown := util.ToBool(updates["image_quota_unknown"])
 	if quota > 0 {
@@ -1005,6 +1020,74 @@ func accountRefreshSuccessUpdates(remote map[string]any) map[string]any {
 	return updates
 }
 
+type accountRefreshError struct {
+	stage string
+	err   error
+}
+
+func (e *accountRefreshError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *accountRefreshError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func refreshErrorStage(err error) string {
+	var refreshErr *accountRefreshError
+	if errors.As(err, &refreshErr) && refreshErr.stage != "" {
+		return refreshErr.stage
+	}
+	return "remote_info"
+}
+
+func wrapAccountRefreshError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &accountRefreshError{stage: stage, err: err}
+}
+
+func accountRefreshFailureUpdates(stage string, err error) map[string]any {
+	return map[string]any{
+		"status":                   "异常",
+		"image_quota_unknown":      true,
+		"limits_progress":          []any{},
+		"restore_at":               nil,
+		"quota_checked_at":         nil,
+		"last_refresh_error":       err.Error(),
+		"last_refresh_error_stage": stage,
+		"last_refresh_error_at":    util.NowISO(),
+	}
+}
+
+func (s *AccountService) recordAccountRefreshFailure(accessToken, stage string, err error) {
+	if err == nil {
+		return
+	}
+	updates := accountRefreshFailureUpdates(stage, err)
+	updated := s.UpdateAccount(accessToken, updates)
+	if s.logs != nil {
+		logItem := map[string]any{
+			"module":         "accounts",
+			"operation_type": "诊断",
+			"token":          util.AnonymizeToken(accessToken),
+			"stage":          stage,
+			"error":          err.Error(),
+		}
+		if updated != nil {
+			logItem["status"] = updated["status"]
+		}
+		s.logs.Add("账号刷新验证失败", logItem)
+	}
+}
+
 func (s *AccountService) RefreshAccounts(ctx context.Context, accessTokens []string) map[string]any {
 	return s.refreshAccountsWithWorkerLimit(ctx, accessTokens, 10)
 }
@@ -1017,15 +1100,16 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 	tokens := cleanTokens(accessTokens)
 	if len(tokens) == 0 {
 		return map[string]any{
-			"refreshed":         0,
-			"session_refreshed": 0,
-			"session_failed":    0,
-			"errors":            []map[string]string{},
-			"results":           []map[string]any{},
-			"total":             0,
-			"failed":            0,
-			"duration_ms":       0,
-			"items":             s.ListAccounts(),
+			"refreshed":                 0,
+			"session_refreshed":         0,
+			"session_failed":            0,
+			"session_validation_failed": 0,
+			"errors":                    []map[string]string{},
+			"results":                   []map[string]any{},
+			"total":                     0,
+			"failed":                    0,
+			"duration_ms":               0,
+			"items":                     s.ListAccounts(),
 		}
 	}
 	startedAt := time.Now()
@@ -1141,6 +1225,7 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 
 	refreshedCount := 0
 	failedRefreshCount := 0
+	validationFailedCount := 0
 	if len(pendingRefresh) > 0 {
 		sortPendingRefreshByPriority(pendingRefresh, s)
 	}
@@ -1148,7 +1233,7 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 		detail := detailsByToken[item.accessToken]
 		newAccessToken, newSessionToken, newExpires, err := s.refresher.RefreshToken(ctx, item.accessToken, item.sessionToken)
 		if err != nil {
-			s.UpdateAccount(item.accessToken, map[string]any{"status": "异常"})
+			s.recordAccountRefreshFailure(item.accessToken, "session_refresh", err)
 			failedRefreshCount++
 			message := fmt.Sprintf("token刷新失败: %s", err.Error())
 			errors = append(errors, map[string]string{
@@ -1165,6 +1250,7 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 			continue
 		}
 		if !s.RefreshAccountViaSession(item.accessToken, newAccessToken, newSessionToken, newExpires) {
+			s.recordAccountRefreshFailure(item.accessToken, "session_refresh", fmt.Errorf("账号更新失败"))
 			failedRefreshCount++
 			message := "token刷新失败: 账号更新失败"
 			errors = append(errors, map[string]string{
@@ -1179,16 +1265,45 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 			}
 			continue
 		}
-		if info, err := s.FetchRemoteInfo(ctx, newAccessToken); err == nil {
+		info, validationErr := s.FetchRemoteInfo(ctx, newAccessToken)
+		if validationErr != nil {
+			stage := refreshErrorStage(validationErr)
+			s.recordAccountRefreshFailure(newAccessToken, stage, validationErr)
+			validationFailedCount++
+			message := fmt.Sprintf("token刷新成功，但账号信息验证失败（阶段: %s）: %s", stage, validationErr.Error())
+			errors = append(errors, map[string]string{
+				"account_id":   accountIDFromToken(newAccessToken),
+				"access_token": newAccessToken,
+				"error":        message,
+			})
+			if detail != nil {
+				detail["access_token"] = newAccessToken
+				detail["token_preview"] = util.AnonymizeToken(newAccessToken)
+				detail["status"] = "error"
+				detail["message"] = "Token已刷新，但账号信息验证失败"
+				detail["error"] = message
+				detail["success"] = false
+				if current := s.GetAccount(newAccessToken); current != nil {
+					detail["account_status"] = current["status"]
+					detail["email"] = current["email"]
+					detail["type"] = current["type"]
+					detail["quota"] = current["quota"]
+					detail["image_quota_unknown"] = current["image_quota_unknown"]
+					detail["restore_at"] = current["restore_at"]
+				}
+			}
+		} else {
 			s.UpdateAccount(newAccessToken, accountRefreshSuccessUpdates(info))
 		}
 		if detail != nil {
 			detail["access_token"] = newAccessToken
 			detail["token_preview"] = util.AnonymizeToken(newAccessToken)
-			detail["success"] = true
-			detail["status"] = "success"
-			detail["message"] = "token刷新成功"
-			delete(detail, "error")
+			if validationErr == nil {
+				detail["success"] = true
+				detail["status"] = "success"
+				detail["message"] = "Token刷新并完成账号验证"
+				delete(detail, "error")
+			}
 			if current := s.GetAccount(newAccessToken); current != nil {
 				detail["account_status"] = current["status"]
 				detail["email"] = current["email"]
@@ -1202,15 +1317,16 @@ func (s *AccountService) refreshAccountsWithWorkerLimit(ctx context.Context, acc
 	}
 
 	return map[string]any{
-		"refreshed":         refreshed,
-		"session_refreshed": refreshedCount,
-		"session_failed":    failedRefreshCount,
-		"errors":            errors,
-		"results":           details,
-		"total":             len(tokens),
-		"failed":            len(errors),
-		"duration_ms":       time.Since(startedAt).Milliseconds(),
-		"items":             s.ListAccounts(),
+		"refreshed":                 refreshed,
+		"session_refreshed":         refreshedCount,
+		"session_failed":            failedRefreshCount,
+		"session_validation_failed": validationFailedCount,
+		"errors":                    errors,
+		"results":                   details,
+		"total":                     len(tokens),
+		"failed":                    len(errors),
+		"duration_ms":               time.Since(startedAt).Milliseconds(),
+		"items":                     s.ListAccounts(),
 	}
 }
 
@@ -1363,15 +1479,15 @@ func (s *AccountService) RefreshAccountViaSession(accessToken, newAccessToken, n
 	}
 
 	merged := mergeMaps(s.items[idx], map[string]any{
-		"access_token":       newAccessToken,
-		"session_token":      newSessionToken,
-		"session_expires":    newExpires,
-		"status":             "正常",
-		"token_refreshed_at": util.NowISO(),
+		"access_token":             newAccessToken,
+		"session_token":            newSessionToken,
+		"session_expires":          newExpires,
+		"status":                   "刷新中",
+		"token_refreshed_at":       util.NowISO(),
+		"last_refresh_error":       nil,
+		"last_refresh_error_stage": nil,
+		"last_refresh_error_at":    nil,
 	})
-	if !util.ToBool(merged["image_quota_unknown"]) && util.ToInt(merged["quota"], 0) <= 0 {
-		merged["status"] = "限流"
-	}
 	account := normalizeAccount(merged)
 	if account == nil {
 		return false
@@ -1397,6 +1513,16 @@ func (s *AccountService) RefreshAccountViaSession(accessToken, newAccessToken, n
 	return true
 }
 
+func (s *AccountService) refreshAccountInfoAfterSession(ctx context.Context, accessToken string) error {
+	info, err := s.FetchRemoteInfo(ctx, accessToken)
+	if err != nil {
+		s.recordAccountRefreshFailure(accessToken, refreshErrorStage(err), err)
+		return err
+	}
+	s.UpdateAccount(accessToken, accountRefreshSuccessUpdates(info))
+	return nil
+}
+
 func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string) (map[string]any, error) {
 	accessToken = util.Clean(accessToken)
 	if accessToken == "" {
@@ -1409,7 +1535,7 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	if err := s.bootstrapRemote(ctx, client, baseURL, accessToken); err != nil {
-		return nil, err
+		return nil, wrapAccountRefreshError("bootstrap", err)
 	}
 	type response struct {
 		payload map[string]any
@@ -1450,13 +1576,13 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 	}
 	me := fetch(http.MethodGet, "/backend-api/me", nil, nil)
 	if me.err != nil {
-		return nil, me.err
+		return nil, wrapAccountRefreshError("me", me.err)
 	}
 	init := fetch(http.MethodPost, "/backend-api/conversation/init", map[string]any{
 		"gizmo_id": nil, "requested_default_model": nil, "conversation_id": nil, "timezone_offset_min": -480,
 	}, nil)
 	if init.err != nil {
-		return nil, init.err
+		return nil, wrapAccountRefreshError("conversation_init", init.err)
 	}
 	limits := anyList(init.payload["limits_progress"])
 	s.logs.Add("diag_limits_raw", map[string]any{
@@ -2074,7 +2200,14 @@ func normalizeAccount(item map[string]any) map[string]any {
 	normalized["fail"] = util.ToInt(normalized["fail"], 0)
 	normalized["last_nonzero_quota"] = util.ToInt(normalized["last_nonzero_quota"], 0)
 	normalized["zero_quota_refresh_count"] = util.ToInt(normalized["zero_quota_refresh_count"], 0)
-	for _, key := range []string{"quota_checked_at", "token_refreshed_at", "last_success_at", "imported_at", "refresh_cooldown_until"} {
+	for _, key := range []string{"quota_checked_at", "token_refreshed_at", "last_success_at", "imported_at", "refresh_cooldown_until", "last_refresh_error_at"} {
+		if value := util.Clean(normalized[key]); value != "" {
+			normalized[key] = value
+		} else {
+			normalized[key] = nil
+		}
+	}
+	for _, key := range []string{"last_refresh_error", "last_refresh_error_stage"} {
 		if value := util.Clean(normalized[key]); value != "" {
 			normalized[key] = value
 		} else {
@@ -2121,6 +2254,9 @@ func publicAccounts(accounts []map[string]any) []map[string]any {
 			"lastNonzeroQuota":      util.ToInt(account["last_nonzero_quota"], 0),
 			"importedAt":            account["imported_at"],
 			"refreshCooldownUntil":  account["refresh_cooldown_until"],
+			"lastRefreshError":      account["last_refresh_error"],
+			"lastRefreshErrorStage": account["last_refresh_error_stage"],
+			"lastRefreshErrorAt":    account["last_refresh_error_at"],
 			"zeroQuotaRefreshCount": util.ToInt(account["zero_quota_refresh_count"], 0),
 			"reservoirLayer":        classifyReservoirAccount(account, time.Now(), DefaultReservoirPolicy()),
 			"warmingStatus":         util.ValueOr(account["warming_status"], nil),

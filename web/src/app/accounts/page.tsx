@@ -119,6 +119,14 @@ const statusMeta: Record<
   禁用: { icon: Ban, badge: "secondary" },
 };
 
+const refreshErrorStageLabels: Record<string, string> = {
+  bootstrap: "站点初始化",
+  me: "账号身份验证",
+  conversation_init: "额度初始化",
+  session_refresh: "Session 刷新",
+  remote_info: "远端账号验证",
+};
+
 const metricCards = [
   {
     key: "total",
@@ -699,13 +707,18 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
       const data = await refreshAccounts(targetIds);
       applyAccountItems(data.items);
       window.dispatchEvent(new Event(QUOTA_REFRESH_EVENT));
+      const sessionValidationSucceeded = Math.max(
+        0,
+        (data.session_refreshed ?? 0) - (data.session_validation_failed ?? 0),
+      );
+      const verifiedCount = data.refreshed + sessionValidationSucceeded;
       if (data.errors.length > 0) {
         const firstError = data.errors[0]?.error;
         toast.error(
-          `刷新成功 ${data.refreshed} 个，失败 ${data.errors.length} 个${firstError ? `，首个错误：${firstError}` : ""}`,
+          `验证成功 ${verifiedCount} 个，失败 ${data.errors.length} 个${firstError ? `，首个错误：${firstError}` : ""}`,
         );
       } else {
-        toast.success(`刷新成功 ${data.refreshed} 个账户`);
+        toast.success(`验证成功 ${verifiedCount} 个账户`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "刷新账户失败";
@@ -911,6 +924,19 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
         <StatusIcon className="size-3.5" />
         {account.status}
       </Badge>
+    );
+  };
+
+  const renderRefreshDiagnostic = (account: Account) => {
+    if (!account.lastRefreshError) return null;
+    const stage = refreshErrorStageLabels[account.lastRefreshErrorStage ?? ""] ?? account.lastRefreshErrorStage ?? "远端验证";
+    return (
+      <span
+        className="max-w-[16rem] truncate text-xs text-rose-600"
+        title={account.lastRefreshError}
+      >
+        验证失败 · {stage}
+      </span>
     );
   };
 
@@ -1837,11 +1863,14 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                             </div>
                           </TableCell>
                           <TableCell>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              {renderStatusBadge(account)}
-                              <Badge variant="secondary" className="rounded-md px-2 py-1">
-                                {account.type}
-                              </Badge>
+                            <div className="flex flex-col items-start gap-1.5">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                {renderStatusBadge(account)}
+                                <Badge variant="secondary" className="rounded-md px-2 py-1">
+                                  {account.type}
+                                </Badge>
+                              </div>
+                              {renderRefreshDiagnostic(account)}
                             </div>
                           </TableCell>
                           <TableCell>
@@ -1900,6 +1929,9 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
                                 额度 {formatQuota(account)}
                               </Badge>
                             </div>
+                            {renderRefreshDiagnostic(account) ? (
+                              <div className="mt-2">{renderRefreshDiagnostic(account)}</div>
+                            ) : null}
 
                             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                               <div className="rounded-lg bg-stone-50 p-2">
