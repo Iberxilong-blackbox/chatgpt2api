@@ -308,6 +308,30 @@ func TestRefreshAccountsReturnsEmptyErrorsArray(t *testing.T) {
 	}
 }
 
+func TestApplyAccountErrorMessageTreatsUnparseableAuthenticationTokenAsRefreshable(t *testing.T) {
+	accounts := newTestAccountService(t)
+	accounts.AddAccountRecords([]map[string]any{{
+		"access_token":  "token-1",
+		"session_token": "session-1",
+	}})
+
+	message, handled := accounts.ApplyAccountErrorMessage(
+		"token-1",
+		"refresh_accounts",
+		"/backend-api/me failed: HTTP 401, body=Could not parse your authentication token. Please try signing in again.",
+	)
+	if !handled {
+		t.Fatalf("handled = false, want true; message = %q", message)
+	}
+	if message != "检测到token过期，已提交刷新任务" {
+		t.Fatalf("message = %q, want refresh message", message)
+	}
+	account := accounts.GetAccount("token-1")
+	if account["status"] != "过期待刷新" {
+		t.Fatalf("status = %#v, want 过期待刷新", account["status"])
+	}
+}
+
 func TestRefreshAccountsSerialUsesOneWorker(t *testing.T) {
 	var mu sync.Mutex
 	active := 0

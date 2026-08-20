@@ -1997,6 +1997,7 @@ func IsAccountTokenExpiredErrorMessage(message string) bool {
 	}
 	return strings.Contains(text, "token expired") ||
 		strings.Contains(text, "authentication token is expired") ||
+		strings.Contains(text, "could not parse your authentication token") ||
 		strings.Contains(text, "token_invalidated") ||
 		strings.Contains(text, "authentication token has been invalidated")
 }
