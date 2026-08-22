@@ -1,0 +1,8 @@
+{
+  "imap_server": "imappro.zoho.com",
+  "imap_port": 993,
+  "email_address": "admin@example.com",
+  "password": "REPLACE_WITH_ZOHO_APP_PASSWORD",
+  "sender_filter": "",
+  "delete_after_read": true
+}

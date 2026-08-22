@@ -1,0 +1,11 @@
+{
+  "proxy": {
+    "default": "socks5://127.0.0.1:1080"
+  },
+  "fingerprint": {
+    "os_weights": {
+      "windows": 100,
+      "mac": 0
+    }
+  }
+}

@@ -1,0 +1,11 @@
+config.json
+config.jsonc
+output/
+screenshots/
+accounts/
+runtime/
+debug_output/
+.venv/
+*.har
+__pycache__/
+turnstile_controller/__pycache__/

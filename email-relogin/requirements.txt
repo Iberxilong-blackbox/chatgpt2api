@@ -1,0 +1,4 @@
+curl-cffi==0.15.0
+playwright==1.60.0
+pyotp==2.9.0
+Faker

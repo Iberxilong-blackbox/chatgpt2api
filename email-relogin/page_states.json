@@ -1,0 +1,59 @@
+{
+    "threshold": 0.6,
+    "templates": [
+      {
+        "id": "welcome_modal",
+        "match_texts": [
+          "You're all set",
+          "Don't share sensitive info",
+          "Continue",
+          "By continuing, you agree to our Terms"
+        ],
+        "description": "ChatGPT 注册完成欢迎弹窗",
+        "action": "click_continue_in_dialog",
+        "action_config": {
+          "selectors": [
+            "div[role='dialog'] button:has-text('Continue')",
+            "[role='dialog'] button:has-text('Continue')",
+            "div[role='dialog'] button:has-text('Next')",
+            "div[role='dialog'] button:has-text('Get started')",
+            "div[role='dialog'] button:has-text(\"Let's go\")",
+            "div[role='dialog'] button",
+            "[role='dialog'] button"
+          ]
+        },
+        "resume_strategy": "retry_current"
+      },
+      {
+        "id": "auth_error",
+        "match_texts": [
+          "We ran into an issue while signing you in",
+          "please take a break and try again soon",
+          "Go back"
+        ],
+        "description": "邮箱输入后 auth/error?error=undefined 错误页",
+        "action": "navigate_to",
+        "action_config": {
+          "url": "https://chatgpt.com/"
+        },
+        "resume_strategy": "retry_current"
+      },
+      {
+        "id": "error_occurred",
+        "match_texts": [
+          "Oops, an error occurred!",
+          "Invalid content type: text/html",
+          "Try again"
+        ],
+        "description": "about-you 提交后错误页面",
+        "action": "click_button",
+        "action_config": {
+          "selectors": [
+            "button:has-text('Try again')",
+            "button:has-text('try again')"
+          ]
+        },
+        "resume_strategy": "retry_current"
+      }
+    ]
+}
