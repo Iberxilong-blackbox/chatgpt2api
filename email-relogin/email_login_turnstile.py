@@ -3035,28 +3035,55 @@ def email_login(
         # ── 7c. Click Continue after email ──
         _log("[Step 7c] Clicking Continue after email...")
         email_submit_trace["active"] = True
-        submit_selectors = [
-            "button[type='submit']",
-            "button:has-text('Continue')",
-            "button:has-text('Next')",
-            "button[value='validate']",
-            "button[value='email']",
-        ]
         clicked = False
-        for sel in submit_selectors:
+        # Scope the submit button to the email input's form.  The public
+        # ChatGPT homepage has its own type=submit button below the login
+        # modal; a page-wide selector can click that obscured control instead
+        # of advancing authentication.
+        if email_el is not None:
             try:
-                btn = page.locator(sel).first
-                if btn.is_visible(timeout=1000):
-                    text = (btn.text_content() or "").strip()[:50]
-                    _log(f"  Clicking: '{text}' ({sel})")
-                    btn.click(force=True)
-                    clicked = True
-                    break
-            except Exception:
-                continue
+                form = email_el.locator("xpath=ancestor::form").first
+                if form.is_visible(timeout=1000):
+                    submit = form.locator(
+                        "button[type='submit'], button:has-text('Continue'), "
+                        "button:has-text('Next'), button[value='validate'], button[value='email']"
+                    ).first
+                    if submit.is_visible(timeout=1000) and submit.is_enabled(timeout=1000):
+                        text = (submit.text_content() or "").strip()[:50]
+                        _log(f"  Clicking email form submit: '{text}'")
+                        submit.click(force=True)
+                        clicked = True
+                    else:
+                        _log("  [!] Email form submit is not visible or enabled")
+            except Exception as exc:
+                _log(f"  [!] Could not submit email form directly: {type(exc).__name__}")
+
+        if not clicked and email_el is not None:
+            try:
+                _log("  Submitting email input with Enter...")
+                email_el.press("Enter")
+                clicked = True
+            except Exception as exc:
+                _log(f"  [!] Could not submit email input with Enter: {type(exc).__name__}")
+
         if not clicked:
-            _log("  [!] Could not find Continue button — trying Enter key...")
-            page.keyboard.press("Enter")
+            _log("  [!] No scoped email submit control found")
+            # This fallback is deliberately text-only.  Do not reintroduce a
+            # page-wide type=submit selector: it can target the underlying
+            # unauthenticated chat composer.
+            for sel in ["button:has-text('Continue')", "button:has-text('Next')"]:
+                try:
+                    btn = page.locator(sel).first
+                    if btn.is_visible(timeout=1000) and btn.is_enabled(timeout=1000):
+                        text = (btn.text_content() or "").strip()[:50]
+                        _log(f"  Fallback clicking: '{text}' ({sel})")
+                        btn.click(force=True)
+                        clicked = True
+                        break
+                except Exception:
+                    continue
+        if not clicked:
+            _log("  [!] Could not submit email — continuing to state diagnosis")
 
         # ── 8. Handle post-email pages (OTP / password / about_you) ──
         # State machine loop to handle whatever page comes next
