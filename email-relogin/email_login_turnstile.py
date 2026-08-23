@@ -2164,6 +2164,27 @@ def _type_human(el, text: str, min_delay: int = 30, max_delay: int = 120,
 # Page type detection
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _login_entry_visible(page, body_text: str = "") -> bool:
+    """Return whether the public ChatGPT login entry is visible.
+
+    A ChatGPT home URL alone does not prove an authenticated session.  The
+    public homepage can expose the login action as a button, link, or another
+    interactive element depending on the current frontend deployment.
+    """
+    for selector in (
+        "[data-testid='login-button']",
+        "button:has-text('Log in')",
+        "a:has-text('Log in')",
+        "[role='button']:has-text('Log in')",
+    ):
+        try:
+            if page.locator(selector).first.is_visible(timeout=500):
+                return True
+        except Exception:
+            continue
+    return bool(re.search(r"\bLog in\b", body_text, re.IGNORECASE))
+
+
 def _detect_page_type(page) -> str:
     """Detect what page we're on. Returns one of:
     'login', 'email_input', 'otp', 'password', 'about_you',
@@ -2290,12 +2311,9 @@ def _detect_page_type(page) -> str:
                 return "email_input"
         except Exception:
             pass
-        # Check 2: "Log in" button visible → NOT logged in
-        try:
-            if page.locator("button:has-text('Log in')").first.is_visible(timeout=500):
-                return "login"
-        except Exception:
-            pass
+        # Check 2: public login entry visible → NOT logged in.
+        if _login_entry_visible(page, body_text):
+            return "login"
         # Check 3: no login indicators → truly logged in
         return "chatgpt_home"
 
@@ -2477,6 +2495,36 @@ def email_login(
                 pass
 
         page.on("request", _on_request)
+
+        # Keep a small, metadata-only trace of requests caused by submitting
+        # the email form.  This is enabled only for that transition so logs
+        # can explain a failed handoff without retaining request bodies, URLs
+        # with query parameters, cookies, or credentials.
+        email_submit_trace: dict[str, Any] = {"active": False, "responses": []}
+
+        def _on_email_submit_response(response):
+            if not email_submit_trace["active"]:
+                return
+            try:
+                from urllib.parse import urlsplit
+
+                parsed = urlsplit(response.url)
+                hostname = (parsed.hostname or "").lower()
+                if not any(domain in hostname for domain in ("chatgpt.com", "openai.com")):
+                    return
+                responses = email_submit_trace["responses"]
+                if len(responses) >= 16:
+                    return
+                responses.append({
+                    "host": hostname,
+                    "path": parsed.path,
+                    "status": response.status,
+                    "content_type": response.headers.get("content-type", "").split(";", 1)[0],
+                })
+            except Exception:
+                pass
+
+        page.on("response", _on_email_submit_response)
 
         # ── 4b. Text-based page-state fallback matcher ──
         matcher = None
@@ -2986,6 +3034,7 @@ def email_login(
 
         # ── 7c. Click Continue after email ──
         _log("[Step 7c] Clicking Continue after email...")
+        email_submit_trace["active"] = True
         submit_selectors = [
             "button[type='submit']",
             "button:has-text('Continue')",
@@ -3046,6 +3095,17 @@ def email_login(
             # Detect page type BEFORE CF wait to see if it's CF challenge
             page_type = _detect_page_type(page)
             _log(f"  Initial page type: {page_type}")
+
+            if rd == 0:
+                email_submit_trace["active"] = False
+                trace = email_submit_trace["responses"]
+                if trace:
+                    _log("  Email-submit response metadata: " + json.dumps(trace, sort_keys=True))
+                else:
+                    _log("  [!] No ChatGPT/OpenAI response observed after email submission")
+                if page_type == "login":
+                    _log("  [!] Returned to the public login page after email submission")
+                    _save_screenshot(page, "email_submit_returned_to_login")
 
             # If CF challenge on auth.openai.com, solve it first
             if page_type == "cf_challenge":
@@ -4301,25 +4361,8 @@ def email_login(
         _log("[Step 11] Verifying login state...")
         login_state_failed = False
         try:
-            login_selectors = (
-                "button:has-text('Log in')",
-                "a:has-text('Log in')",
-                "[data-testid='login-button']",
-            )
-            has_log_in_btn = False
-            for selector in login_selectors:
-                try:
-                    if page.locator(selector).first.is_visible(timeout=1000):
-                        has_log_in_btn = True
-                        break
-                except Exception:
-                    continue
-            if not has_log_in_btn:
-                try:
-                    body_text = page.locator("body").inner_text(timeout=2000)
-                    has_log_in_btn = bool(re.search(r"\bLog in\b", body_text, re.IGNORECASE))
-                except Exception:
-                    pass
+            body_text = page.locator("body").inner_text(timeout=2000)
+            has_log_in_btn = _login_entry_visible(page, body_text)
         except Exception:
             has_log_in_btn = False
         if has_log_in_btn:
