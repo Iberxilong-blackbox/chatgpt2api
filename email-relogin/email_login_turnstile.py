@@ -4479,6 +4479,53 @@ def email_login(
             _save_screenshot(page, "session_fetch_failed")
             _prompt_user("Session fetch failed — browser is open for manual inspection", interactive=interactive)
 
+        # ── 12a. Verify authenticated API access ───────────────────────
+        # A session response alone proves that browser cookies were issued,
+        # but M1 acceptance also requires the APIs consumed by the service.
+        api_validation = {"me": {"ok": False}, "conversation_init": {"ok": False}}
+        access_token = session_data.get("accessToken", "")
+        if access_token:
+            try:
+                api_validation = page.evaluate("""async (token) => {
+                    const summarize = async (url, options) => {
+                        const response = await fetch(url, {
+                            ...options,
+                            credentials: 'include',
+                            headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'Content-Type': 'application/json',
+                                ...(options.headers || {}),
+                            },
+                        });
+                        const text = await response.text();
+                        let payload = {};
+                        try { payload = JSON.parse(text); } catch (_) {}
+                        return {
+                            ok: response.ok,
+                            status: response.status,
+                            content_type: response.headers.get('content-type') || '',
+                            keys: payload && typeof payload === 'object' ? Object.keys(payload).sort() : [],
+                        };
+                    };
+                    return {
+                        me: await summarize('/backend-api/me', {method: 'GET'}),
+                        conversation_init: await summarize('/backend-api/conversation/init', {
+                            method: 'POST',
+                            body: JSON.stringify({
+                                gizmo_id: null,
+                                requested_default_model: null,
+                                conversation_id: null,
+                                timezone_offset_min: -480,
+                            }),
+                        }),
+                    };
+                }""", access_token)
+                _log("  Authenticated API validation metadata: " + json.dumps(api_validation, sort_keys=True))
+            except Exception as exc:
+                _log(f"  [!] Authenticated API validation failed: {type(exc).__name__}")
+        else:
+            _log("  [!] Skipping authenticated API validation: no accessToken")
+
         # ── 11. Extract claims from JWT (same level as chatgpt_login.py) ──
         account_id = ""
         jwt_sub = ""
@@ -4545,11 +4592,13 @@ def email_login(
         user_info = session_data.get("user") or {}
 
         result = {
-            "success": bool(session_data.get("accessToken")),
+            "success": bool(session_data.get("accessToken")) and bool(api_validation.get("me", {}).get("ok")) and bool(api_validation.get("conversation_init", {}).get("ok")),
             "stage": (
                 "session_fetched"
-                if session_data.get("accessToken")
-                else "not_logged_in" if login_state_failed else "no_access_token"
+                if session_data.get("accessToken") and api_validation.get("me", {}).get("ok") and api_validation.get("conversation_init", {}).get("ok")
+                else "not_logged_in" if login_state_failed
+                else "api_validation_failed" if session_data.get("accessToken")
+                else "no_access_token"
             ),
             "email": email,
             "password": password,
@@ -4580,6 +4629,7 @@ def email_login(
             "jwt_profile_email": jwt_profile_email,
             "error_message": "",
             "rum_view_tags": session_data.get("rumViewTags", {}),
+            "api_validation": api_validation,
         }
 
         if keep_logs:
