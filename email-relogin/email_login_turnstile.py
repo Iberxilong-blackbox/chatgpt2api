@@ -3254,10 +3254,14 @@ def email_login(
                             pass  # corrupt or empty — start fresh
                     existing["is-ban"] = True
                     existing["success"] = False
-                    existing["error_message"] = (
-                        existing.get("error_message", "")
-                        or "Account has been deleted or deactivated by OpenAI (account_deactivated)"
-                    )
+                    existing["stage"] = "account_deactivated"
+                    existing["error_message"] = "Account has been deleted or deactivated by OpenAI (account_deactivated)"
+                    # Existing tokens belong to a session that OpenAI has
+                    # just rejected.  Do not leave them as apparent evidence
+                    # of an authenticated result in the isolated run summary.
+                    existing["access_token"] = ""
+                    existing["session_token"] = ""
+                    existing["id_token"] = ""
                     existing["session_refreshed_at"] = datetime.now(timezone(timedelta(hours=8))).isoformat()
                     with open(output_path, "w", encoding="utf-8") as _f:
                         json.dump(existing, _f, ensure_ascii=False, indent=2)
