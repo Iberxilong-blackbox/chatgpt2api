@@ -4299,12 +4299,25 @@ def email_login(
 
         # Verify we appear logged in before fetching session
         _log("[Step 11] Verifying login state...")
+        login_state_failed = False
         try:
-            has_log_in_btn = page.locator("button:has-text('Log in')").first.is_visible(timeout=2000)
+            login_selectors = (
+                "button:has-text('Log in')",
+                "a:has-text('Log in')",
+                "[data-testid='login-button']",
+            )
+            has_log_in_btn = any(
+                page.locator(selector).first.is_visible(timeout=1000)
+                for selector in login_selectors
+            )
+            if not has_log_in_btn:
+                body_text = page.locator("body").inner_text(timeout=2000)
+                has_log_in_btn = bool(re.search(r"\\bLog in\\b", body_text, re.IGNORECASE))
         except Exception:
             has_log_in_btn = False
         if has_log_in_btn:
-            _log("  [!] 'Log in' button still visible — not logged in!")
+            login_state_failed = True
+            _log("  [!] Login entry still visible — not logged in!")
             _save_screenshot(page, "not_logged_in")
             _prompt_user("Not logged in — 'Log in' button still visible on chatgpt.com", interactive=interactive)
 
@@ -4429,7 +4442,11 @@ def email_login(
 
         result = {
             "success": bool(session_data.get("accessToken")),
-            "stage": "session_fetched" if session_data.get("accessToken") else "no_access_token",
+            "stage": (
+                "session_fetched"
+                if session_data.get("accessToken")
+                else "not_logged_in" if login_state_failed else "no_access_token"
+            ),
             "email": email,
             "password": password,
             "account_id": account_id,
