@@ -81,6 +81,21 @@ def redact_script_output(output: str, secrets: list[str]) -> str:
     return output
 
 
+def classify_script_result(output: str) -> tuple[bool, str, str]:
+    """Classify the single-account CLI result without trusting input tokens."""
+    if re.search(r"^\s*\[OK\]\s+", output, re.MULTILINE):
+        return True, "", ""
+    if "External identity provider redirect detected" in output:
+        return False, "external_identity_provider", (
+            "Account requires an external identity provider; email OTP M1 does not support this login path"
+        )
+    if "Account DEACTIVATED" in output:
+        return False, "account_deactivated", "Account has been deleted or deactivated by OpenAI (account_deactivated)"
+    if "OTP timeout" in output:
+        return False, "otp_timeout", "OTP not received within timeout"
+    return False, "script_failed_without_result", "login script did not report a successful single-account result"
+
+
 def account_summary(payload: dict[str, Any]) -> dict[str, Any]:
     totp = payload.get("totp")
     return {
@@ -240,6 +255,7 @@ def main() -> int:
         result = json.loads(account_copy.read_text(encoding="utf-8"))
     except Exception:
         pass
+    script_succeeded, detected_stage, detected_error = classify_script_result(script_output)
     if timed_out:
         stage = "timeout"
         error_message = "login process exceeded the configured timeout"
@@ -249,12 +265,19 @@ def main() -> int:
         summary_account["has_access_token"] = False
         summary_account["has_session_token"] = False
     else:
-        stage = redact_text(result.get("stage", "script_result_unavailable"))
-        error_message = redact_script_output(redact_text(result.get("error_message", "")), secret_values(payload))
-        summary_account = account_summary(result if result else payload)
+        if script_succeeded and result.get("success") is True:
+            stage = redact_text(result.get("stage", "script_result_unavailable"))
+            error_message = redact_script_output(redact_text(result.get("error_message", "")), secret_values(payload))
+            summary_account = account_summary(result)
+        else:
+            stage = detected_stage
+            error_message = detected_error
+            summary_account = account_summary(payload)
+            summary_account["has_access_token"] = False
+            summary_account["has_session_token"] = False
     summary = {
         "run_id": run_id,
-        "status": "success" if exit_code == 0 and result.get("success") is True else "failed",
+        "status": "success" if exit_code == 0 and script_succeeded and result.get("success") is True else "failed",
         "started_at": started_at,
         "finished_at": iso_now(),
         "exit_code": exit_code,
