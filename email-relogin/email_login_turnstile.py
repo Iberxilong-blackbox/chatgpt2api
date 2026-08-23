@@ -4317,7 +4317,7 @@ def email_login(
             if not has_log_in_btn:
                 try:
                     body_text = page.locator("body").inner_text(timeout=2000)
-                    has_log_in_btn = bool(re.search(r"\\bLog in\\b", body_text, re.IGNORECASE))
+                    has_log_in_btn = bool(re.search(r"\bLog in\b", body_text, re.IGNORECASE))
                 except Exception:
                     pass
         except Exception:
