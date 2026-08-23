@@ -4306,13 +4306,20 @@ def email_login(
                 "a:has-text('Log in')",
                 "[data-testid='login-button']",
             )
-            has_log_in_btn = any(
-                page.locator(selector).first.is_visible(timeout=1000)
-                for selector in login_selectors
-            )
+            has_log_in_btn = False
+            for selector in login_selectors:
+                try:
+                    if page.locator(selector).first.is_visible(timeout=1000):
+                        has_log_in_btn = True
+                        break
+                except Exception:
+                    continue
             if not has_log_in_btn:
-                body_text = page.locator("body").inner_text(timeout=2000)
-                has_log_in_btn = bool(re.search(r"\\bLog in\\b", body_text, re.IGNORECASE))
+                try:
+                    body_text = page.locator("body").inner_text(timeout=2000)
+                    has_log_in_btn = bool(re.search(r"\\bLog in\\b", body_text, re.IGNORECASE))
+                except Exception:
+                    pass
         except Exception:
             has_log_in_btn = False
         if has_log_in_btn:
