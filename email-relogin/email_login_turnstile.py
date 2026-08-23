@@ -4311,24 +4311,40 @@ def email_login(
         # ── 11. Fetch /api/auth/session ──
         _log("[Step 12] Fetching /api/auth/session...")
         session_data = {}
+        session_meta = {}
         try:
-            session_data = page.evaluate("""() => {
+            session_result = page.evaluate("""() => {
                 return fetch('/api/auth/session', { credentials: 'include' })
-                    .then(r => r.json())
-                    .catch(e => ({error: e.message}));
+                    .then(async r => {
+                        const text = await r.text();
+                        let payload = {};
+                        try { payload = JSON.parse(text); } catch (e) { payload = {error: 'invalid_json'}; }
+                        return {
+                            payload,
+                            meta: {
+                                status: r.status,
+                                content_type: r.headers.get('content-type') || '',
+                                body_length: text.length,
+                                keys: payload && typeof payload === 'object' ? Object.keys(payload).sort() : [],
+                            },
+                        };
+                    })
+                    .catch(e => ({payload: {error: e.message}, meta: {status: 0, keys: []}}));
             }""")
 
-            _log("\n" + "=" * 55)
-            _log("  /api/auth/session RAW RESPONSE:")
-            _log("=" * 55)
-            _log(json.dumps(session_data, indent=2, ensure_ascii=False))
-            _log("=" * 55)
+            if isinstance(session_result, dict) and "payload" in session_result:
+                session_data = session_result.get("payload") or {}
+                session_meta = session_result.get("meta") or {}
+            else:
+                session_data = session_result or {}
+            _log(f"  /api/auth/session metadata: {json.dumps(session_meta, ensure_ascii=False, sort_keys=True)}")
 
             if session_data.get("accessToken"):
                 at = session_data["accessToken"]
                 _log(f"  accessToken:  {at[:50]}...{at[-20:]}")
             else:
                 _log("  [!] No accessToken in session response")
+                _save_screenshot(page, "session_no_access_token")
                 _prompt_user("No accessToken — browser is open for manual inspection", interactive=interactive)
 
             if session_data.get("sessionToken"):
