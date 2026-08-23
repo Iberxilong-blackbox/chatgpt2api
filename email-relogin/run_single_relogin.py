@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -185,6 +186,24 @@ def write_json(path: Path, payload: dict[str, Any], mode: int = 0o600) -> None:
     set_mode(path, mode)
 
 
+def persist_verified_session(source: Path, refreshed_copy: Path, expected_source_sha256: str) -> None:
+    """Atomically replace the source JSON only if it was not concurrently changed."""
+    current_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    if current_sha256 != expected_source_sha256:
+        raise RuntimeError("source account JSON changed during relogin; refusing to overwrite it")
+
+    # Validate the refreshed payload before replacing the source file.
+    json.loads(refreshed_copy.read_text(encoding="utf-8"))
+    source_mode = stat.S_IMODE(source.stat().st_mode)
+    temporary = source.with_name(f".{source.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        shutil.copyfile(refreshed_copy, temporary)
+        set_mode(temporary, source_mode)
+        os.replace(temporary, source)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run one isolated email-relogin attempt")
     parser.add_argument("--account-json", type=Path, required=False, help="Local account JSON; copied into this run directory")
@@ -229,6 +248,7 @@ def main() -> int:
             print(run_dir)
             return 2
     payload = validate_account_input(args.account_json)
+    source_sha256 = hashlib.sha256(args.account_json.read_bytes()).hexdigest()
     account_copy = run_dir / "account.json"
     shutil.copyfile(args.account_json, account_copy)
     set_mode(account_copy, 0o600)
@@ -275,9 +295,19 @@ def main() -> int:
             summary_account = account_summary(payload)
             summary_account["has_access_token"] = False
             summary_account["has_session_token"] = False
+    verified_success = exit_code == 0 and script_succeeded and result.get("success") is True
+    persisted_source = False
+    if verified_success:
+        try:
+            persist_verified_session(args.account_json, account_copy, source_sha256)
+            persisted_source = True
+        except Exception as exc:
+            verified_success = False
+            stage = "session_persist_failed"
+            error_message = redact_text(exc)
     summary = {
         "run_id": run_id,
-        "status": "success" if exit_code == 0 and script_succeeded and result.get("success") is True else "failed",
+        "status": "success" if verified_success else "failed",
         "started_at": started_at,
         "finished_at": iso_now(),
         "exit_code": exit_code,
@@ -285,6 +315,7 @@ def main() -> int:
         "stage": stage,
         "error_message": error_message,
         "account": summary_account,
+        "source_json_updated": persisted_source,
         "screenshot_count": len(list(screenshots_dir.glob("*.png"))),
         "log_file": "run.log",
     }
