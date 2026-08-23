@@ -2189,7 +2189,8 @@ def _detect_page_type(page) -> str:
     """Detect what page we're on. Returns one of:
     'login', 'email_input', 'otp', 'password', 'about_you',
     'chatgpt_home', 'auth_page', 'mfa_challenge', 'cf_challenge',
-    'account_deactivated', 'getting_started', 'tour_welcome', 'unknown'
+    'account_deactivated', 'external_identity_provider', 'getting_started',
+    'tour_welcome', 'unknown'
     """
     url = page.url.lower()
     try:
@@ -2200,6 +2201,16 @@ def _detect_page_type(page) -> str:
         page_title = (page.title() or "").lower()
     except Exception:
         page_title = ""
+
+    # M1 supports the existing email OTP login path only.  An account routed
+    # to a third-party identity provider cannot complete within this flow and
+    # must be reported immediately instead of being retried as an email page.
+    if any(provider in url for provider in (
+        "accounts.google.com",
+        "login.microsoftonline.com",
+        "appleid.apple.com",
+    )):
+        return "external_identity_provider"
 
     # CF challenge — detect by title OR body text
     if any(kw in body_text for kw in ["cloudflare", "verify you are human", "turnstile"]):
@@ -3235,6 +3246,18 @@ def email_login(
                 ], label="'Log in' button (session-ended restart)", bridge=bridge)
                 page.wait_for_timeout(3000)
                 continue
+
+            elif page_type == "external_identity_provider":
+                _log("  >>> External identity provider redirect detected — unsupported by email OTP M1")
+                _save_screenshot(page, f"external_identity_provider_round{rd + 1}")
+                return {
+                    "success": False,
+                    "stage": "external_identity_provider",
+                    "email": email,
+                    "password": password,
+                    "error_message": "Account requires an external identity provider; email OTP M1 does not support this login path",
+                    "logs": logs,
+                }
 
             elif page_type == "account_deactivated":
                 _log("  >>> Account DEACTIVATED — this account has been deleted or banned by OpenAI")

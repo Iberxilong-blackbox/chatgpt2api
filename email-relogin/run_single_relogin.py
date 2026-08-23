@@ -240,6 +240,18 @@ def main() -> int:
         result = json.loads(account_copy.read_text(encoding="utf-8"))
     except Exception:
         pass
+    if timed_out:
+        stage = "timeout"
+        error_message = "login process exceeded the configured timeout"
+        summary_account = account_summary(payload)
+        # Input JSON may contain an old session. A timed-out run did not
+        # establish or verify a current token, so do not report one here.
+        summary_account["has_access_token"] = False
+        summary_account["has_session_token"] = False
+    else:
+        stage = redact_text(result.get("stage", "script_result_unavailable"))
+        error_message = redact_script_output(redact_text(result.get("error_message", "")), secret_values(payload))
+        summary_account = account_summary(result if result else payload)
     summary = {
         "run_id": run_id,
         "status": "success" if exit_code == 0 and result.get("success") is True else "failed",
@@ -247,9 +259,9 @@ def main() -> int:
         "finished_at": iso_now(),
         "exit_code": exit_code,
         "timed_out": timed_out,
-        "stage": redact_text(result.get("stage", "script_result_unavailable")),
-        "error_message": redact_script_output(redact_text(result.get("error_message", "")), secret_values(payload)),
-        "account": account_summary(result if result else payload),
+        "stage": stage,
+        "error_message": error_message,
+        "account": summary_account,
         "screenshot_count": len(list(screenshots_dir.glob("*.png"))),
         "log_file": "run.log",
     }
