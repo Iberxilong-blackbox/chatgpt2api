@@ -46,6 +46,8 @@ func TestReconcileDeactivatedImportedAccountsDisablesMatchingEmail(t *testing.T)
 		{"access_token": "deactivated-token", "session_token": "session-value", "email": "deactivated@zainy.art", "status": "正常", "quota": 5},
 		{"access_token": "active-token", "session_token": "active-session", "email": "active@zainy.art", "status": "正常", "quota": 5},
 	})
+	accounts.UpdateAccount("deactivated-token", map[string]any{"quota": 5})
+	accounts.UpdateAccount("active-token", map[string]any{"quota": 5})
 
 	importDir := t.TempDir()
 	archivedDir := filepath.Join(importDir, "imported")
