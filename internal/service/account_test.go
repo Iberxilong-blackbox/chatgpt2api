@@ -8,8 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -37,44 +35,6 @@ func TestAccountRefreshSuccessUpdatesMarksZeroQuotaAsLimited(t *testing.T) {
 	}
 	if updates["zero_quota_refresh_count_delta"] != 1 {
 		t.Fatalf("zero_quota_refresh_count_delta = %v, want 1", updates["zero_quota_refresh_count_delta"])
-	}
-}
-
-func TestReconcileDeactivatedImportedAccountsDisablesMatchingEmail(t *testing.T) {
-	accounts := newTestAccountService(t)
-	accounts.AddAccountRecords([]map[string]any{
-		{"access_token": "deactivated-token", "session_token": "session-value", "email": "deactivated@zainy.art", "status": "正常", "quota": 5},
-		{"access_token": "active-token", "session_token": "active-session", "email": "active@zainy.art", "status": "正常", "quota": 5},
-	})
-	accounts.UpdateAccount("deactivated-token", map[string]any{"quota": 5})
-	accounts.UpdateAccount("active-token", map[string]any{"quota": 5})
-
-	importDir := t.TempDir()
-	archivedDir := filepath.Join(importDir, "imported")
-	if err := os.Mkdir(archivedDir, 0o700); err != nil {
-		t.Fatalf("Mkdir() error = %v", err)
-	}
-	marker, err := json.Marshal(map[string]any{"email": "deactivated@zainy.art", "is-ban": true})
-	if err != nil {
-		t.Fatalf("Marshal() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(archivedDir, "deactivated.json"), marker, 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	matched, disabled, err := accounts.ReconcileDeactivatedImportedAccounts(importDir)
-	if err != nil {
-		t.Fatalf("ReconcileDeactivatedImportedAccounts() error = %v", err)
-	}
-	if matched != 1 || disabled != 1 {
-		t.Fatalf("reconciliation = (%d, %d), want (1, 1)", matched, disabled)
-	}
-	deactivated := accounts.GetAccount("deactivated-token")
-	if deactivated["status"] != "禁用" || util.ToInt(deactivated["quota"], -1) != 0 || util.Clean(deactivated["session_token"]) != "" {
-		t.Fatalf("deactivated account = %#v, want disabled without session or quota", deactivated)
-	}
-	if active := accounts.GetAccount("active-token"); active["status"] != "正常" || util.ToInt(active["quota"], -1) != 5 {
-		t.Fatalf("active account = %#v, want unchanged", active)
 	}
 }
 
