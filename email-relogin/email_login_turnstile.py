@@ -5102,11 +5102,15 @@ def main():
             mem_ok = sa.get("memory_disabled", False)
             imp_ok = sa.get("improve_model_disabled", False)
             print(f"  [{status}] {email}  |  memory={mem_ok}  improve_model={imp_ok}")
+            if not result.get("success"):
+                stage = re.sub(r"[^a-z0-9_]+", "_", str(result.get("stage") or "unknown").lower()).strip("_")
+                print(f"  RELOGIN_FAILURE stage={stage or 'unknown'}")
 
             batch_results.append({
                 "file": str(json_path),
                 "email": email,
                 "success": result.get("success", False),
+                "stage": result.get("stage", ""),
                 "settings_adjusted": sa,
             })
 

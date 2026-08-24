@@ -101,6 +101,10 @@ def classify_script_result(output: str) -> tuple[bool, str, str]:
         return False, "account_deactivated", "Account has been deleted or deactivated by OpenAI (account_deactivated)"
     if "OTP timeout" in output:
         return False, "otp_timeout", "OTP not received within timeout"
+    failure_stage = re.search(r"^\s*RELOGIN_FAILURE\s+stage=([a-z0-9_]+)\s*$", output, re.MULTILINE | re.IGNORECASE)
+    if failure_stage:
+        stage = failure_stage.group(1).lower()
+        return False, stage, f"login script reported failure stage: {stage}"
     return False, "script_failed_without_result", "login script did not report a successful single-account result"
 
 
