@@ -59,6 +59,7 @@ type App struct {
 	sub2Import    *service.Sub2APIService
 	register      *service.RegisterService
 	registerGate  *service.RegistrationGateService
+	relogin       *service.AccountReloginService
 	update        *service.UpdateService
 	cancel        context.CancelFunc
 	loginLimit    *loginRateLimiter
@@ -95,6 +96,10 @@ func NewApp() (*App, error) {
 		importDir = filepath.Join(cfg.DataDir, "auto_import")
 	}
 	accounts.SetImportDir(importDir)
+	reloginDir := firstNonEmpty(strings.TrimSpace(os.Getenv("CHATGPT2API_EMAIL_RELOGIN_DIR")), filepath.Join(cfg.RootDir, "email-relogin"))
+	reloginPython := firstNonEmpty(strings.TrimSpace(os.Getenv("CHATGPT2API_EMAIL_RELOGIN_PYTHON")), filepath.Join(reloginDir, ".venv", "bin", "python"))
+	reloginDisplay := firstNonEmpty(strings.TrimSpace(os.Getenv("CHATGPT2API_EMAIL_RELOGIN_DISPLAY")), ":99")
+	reloginRunner := service.CommandAccountReloginRunner{BundleDir: reloginDir, Python: reloginPython, Display: reloginDisplay}
 	go func() {
 		added, errors := accounts.ImportScanDir()
 		if added > 0 || len(errors) > 0 {
@@ -118,7 +123,7 @@ func NewApp() (*App, error) {
 	documentStore, _ := storageBackend.(storage.JSONDocumentBackend)
 	imageSessions := service.NewImageConversationSessionService(filepath.Join(cfg.DataDir, "image_conversation_sessions.json"), storageBackend)
 	engine := &protocol.Engine{Accounts: accounts, Config: cfg, Storage: documentStore, Proxy: proxy, Logger: logger, ImageConversationSessions: imageSessions}
-	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel, loginLimit: newLoginRateLimiter(8, 15*time.Minute), registerLimit: newLoginRateLimiter(12, 30*time.Minute)}
+	app := &App{config: cfg, auth: auth, accounts: accounts, billing: billing, logs: logs, logger: logger, proxy: proxy, engine: engine, images: service.NewImageService(cfg, storageBackend), announce: service.NewAnnouncementService(storageBackend), prompts: service.NewPromptFavoriteService(storageBackend), cpa: service.NewCPAConfig(storageBackend), sub2: service.NewSub2APIConfig(storageBackend), update: newUpdateService(cfg), cancel: cancel, loginLimit: newLoginRateLimiter(8, 15*time.Minute), registerLimit: newLoginRateLimiter(12, 30*time.Minute), relogin: service.NewAccountReloginService(accounts, filepath.Join(importDir, "imported"), reloginRunner)}
 	app.cpaImport = service.NewCPAImportService(app.cpa, accounts, proxy)
 	app.sub2Import = service.NewSub2APIService(app.sub2, accounts)
 	app.register = service.NewRegisterService(accounts, storageBackend)

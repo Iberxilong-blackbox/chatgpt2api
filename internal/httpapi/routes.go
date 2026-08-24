@@ -1255,6 +1255,19 @@ func (a *App) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		result := a.accounts.RefreshAccounts(r.Context(), tokens)
 		a.redactAccountPayloadForIdentity(identity, result)
 		util.WriteJSON(w, http.StatusOK, result)
+	case r.URL.Path == "/api/accounts/relogin" && r.Method == http.MethodPost:
+		body, err := readJSONMap(r)
+		if err != nil {
+			util.WriteError(w, http.StatusBadRequest, "invalid json body")
+			return
+		}
+		accountID := util.Clean(body["account_id"])
+		if accountID == "" {
+			util.WriteError(w, http.StatusBadRequest, "account_id is required")
+			return
+		}
+		result := a.relogin.ReloginAccount(r.Context(), accountID)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"result": result, "items": a.accountItemsForIdentity(identity)})
 	case r.URL.Path == "/api/accounts/update" && r.Method == http.MethodPost:
 		body, _ := readJSONMap(r)
 		token := util.Clean(body["access_token"])

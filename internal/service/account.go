@@ -653,6 +653,56 @@ func (s *AccountService) GetAccount(accessToken string) map[string]any {
 	return util.CopyMap(s.items[idx])
 }
 
+// ImportDir returns the account import root configured for this service.
+func (s *AccountService) ImportDir() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.importDir
+}
+
+// ApplyVerifiedReloginSession stores credentials produced and validated by the
+// email-relogin runner. The runner has already verified /backend-api/me and
+// /backend-api/conversation/init, so this must not refresh the session again.
+func (s *AccountService) ApplyVerifiedReloginSession(oldAccessToken string, session map[string]any) (map[string]any, error) {
+	newAccessToken := util.Clean(firstNonEmpty(util.Clean(session["access_token"]), util.Clean(session["accessToken"])))
+	newSessionToken := util.Clean(firstNonEmpty(util.Clean(session["session_token"]), util.Clean(session["sessionToken"])))
+	if newAccessToken == "" || newSessionToken == "" {
+		return nil, fmt.Errorf("verified relogin session is missing access_token or session_token")
+	}
+	updates := map[string]any{
+		"session_token":            newSessionToken,
+		"session_expires":          firstNonEmpty(util.Clean(session["expires"]), util.Clean(session["session_expires"])),
+		"token_refreshed_at":       util.NowISO(),
+		"last_refresh_error":       nil,
+		"last_refresh_error_stage": nil,
+		"last_refresh_error_at":    nil,
+	}
+	if email := util.Clean(session["email"]); email != "" {
+		updates["email"] = email
+	}
+	if user := util.StringMap(session["user"]); user != nil {
+		if value := util.Clean(user["id"]); value != "" {
+			updates["user_id"] = value
+		}
+		if value := util.Clean(user["email"]); value != "" {
+			updates["email"] = value
+		}
+		if value := util.Clean(user["name"]); value != "" {
+			updates["name"] = value
+		}
+	}
+	if accountID := util.Clean(firstNonEmpty(util.Clean(session["chatgpt_account_id"]), util.Clean(session["account_id"]))); accountID != "" {
+		updates["chatgpt_account_id"] = accountID
+	}
+	if fingerprint := util.StringMap(session["fingerprint"]); fingerprint != nil {
+		updates["fp"] = prepareAccountFP(map[string]any{"fingerprint": fingerprint})
+	}
+	if !s.UpdateAccountFromSessionImport(oldAccessToken, newAccessToken, updates, true) {
+		return nil, fmt.Errorf("account changed before verified relogin session could be applied")
+	}
+	return s.GetAccount(newAccessToken), nil
+}
+
 const MaxTokenSwitchAttempts = 5
 
 func (s *AccountService) GetTextAccessToken() string {
