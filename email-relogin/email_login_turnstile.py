@@ -2119,6 +2119,80 @@ def _find_and_click(page, selectors, label: str = "element",
     return False, ""
 
 
+_ALTERNATIVE_LOGIN_KEYWORDS = (
+    "google",
+    "microsoft",
+    "apple",
+    "phone",
+    "qr code",
+    "single sign-on",
+    "sso",
+    "passkey",
+)
+
+
+def _trusted_email_submit_control(email_input):
+    """Return the email-flow submit control without relying on DOM order.
+
+    OpenAI can render several login variants in the same form. In particular,
+    a social-login button may be a visible ``type=submit`` control before the
+    actual email Continue button. Only choose a control with an explicit
+    email-flow action; absence is safer than submitting a social login form.
+    """
+    try:
+        form = email_input.locator("xpath=ancestor::form").first
+        if not form.is_visible(timeout=1000):
+            return None, "", []
+    except Exception:
+        return None, "", []
+
+    candidates = []
+    skipped = []
+    try:
+        controls = form.locator("button, input[type='submit'], [role='button']").all()
+    except Exception:
+        return None, "", []
+
+    for control in controls:
+        try:
+            if not control.is_visible(timeout=500) or not control.is_enabled(timeout=500):
+                continue
+            text = (control.text_content() or "").strip()
+            value = (control.get_attribute("value") or "").strip()
+            aria_label = (control.get_attribute("aria-label") or "").strip()
+            action = (control.get_attribute("data-dd-action-name") or "").strip()
+            name = (control.get_attribute("name") or "").strip()
+            descriptor = " ".join((text, value, aria_label, action, name)).lower()
+            display_text = (text or value or aria_label or action or name)[:80]
+
+            if any(keyword in descriptor for keyword in _ALTERNATIVE_LOGIN_KEYWORDS):
+                skipped.append(display_text or "unnamed alternative login control")
+                continue
+
+            normalized_text = " ".join(text.lower().split())
+            normalized_value = " ".join(value.lower().split())
+            normalized_action = " ".join(action.lower().split())
+            if normalized_text == "continue":
+                score = 100
+            elif normalized_text in {"continue with email", "continue with email address", "next"}:
+                score = 95
+            elif normalized_action == "continue":
+                score = 80
+            elif normalized_value in {"email", "validate"}:
+                score = 75
+            else:
+                continue
+            candidates.append((score, control, display_text))
+        except Exception:
+            continue
+
+    if not candidates:
+        return None, "", skipped
+    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+    _, control, text = candidates[0]
+    return control, text, skipped
+
+
 def _type_human(el, text: str, min_delay: int = 30, max_delay: int = 120,
                 clear_first: bool = True, bridge=None, selector=None):
     """Type text into input with human-like per-character delays.
@@ -3047,54 +3121,23 @@ def email_login(
         _log("[Step 7c] Clicking Continue after email...")
         email_submit_trace["active"] = True
         clicked = False
-        # Scope the submit button to the email input's form.  The public
-        # ChatGPT homepage has its own type=submit button below the login
-        # modal; a page-wide selector can click that obscured control instead
-        # of advancing authentication.
         if email_el is not None:
             try:
-                form = email_el.locator("xpath=ancestor::form").first
-                if form.is_visible(timeout=1000):
-                    submit = form.locator(
-                        "button[type='submit'], button:has-text('Continue'), "
-                        "button:has-text('Next'), button[value='validate'], button[value='email']"
-                    ).first
-                    if submit.is_visible(timeout=1000) and submit.is_enabled(timeout=1000):
-                        text = (submit.text_content() or "").strip()[:50]
-                        _log(f"  Clicking email form submit: '{text}'")
-                        submit.click(force=True)
-                        clicked = True
-                    else:
-                        _log("  [!] Email form submit is not visible or enabled")
+                submit, text, skipped = _trusted_email_submit_control(email_el)
+                for skipped_text in skipped:
+                    _log(f"  Skipping alternative login control: '{skipped_text}'")
+                if submit is not None:
+                    _log(f"  Clicking trusted email form submit: '{text}'")
+                    submit.click(force=True)
+                    clicked = True
+                else:
+                    _log("  [!] No trusted email submit control found")
+                    _save_screenshot(page, "email_submit_control_not_found")
             except Exception as exc:
-                _log(f"  [!] Could not submit email form directly: {type(exc).__name__}")
-
-        if not clicked and email_el is not None:
-            try:
-                _log("  Submitting email input with Enter...")
-                email_el.press("Enter")
-                clicked = True
-            except Exception as exc:
-                _log(f"  [!] Could not submit email input with Enter: {type(exc).__name__}")
-
+                _log(f"  [!] Could not submit trusted email form control: {type(exc).__name__}")
         if not clicked:
-            _log("  [!] No scoped email submit control found")
-            # This fallback is deliberately text-only.  Do not reintroduce a
-            # page-wide type=submit selector: it can target the underlying
-            # unauthenticated chat composer.
-            for sel in ["button:has-text('Continue')", "button:has-text('Next')"]:
-                try:
-                    btn = page.locator(sel).first
-                    if btn.is_visible(timeout=1000) and btn.is_enabled(timeout=1000):
-                        text = (btn.text_content() or "").strip()[:50]
-                        _log(f"  Fallback clicking: '{text}' ({sel})")
-                        btn.click(force=True)
-                        clicked = True
-                        break
-                except Exception:
-                    continue
-        if not clicked:
-            _log("  [!] Could not submit email — continuing to state diagnosis")
+            _log("  [!] Could not submit email safely — continuing to state diagnosis")
+            _save_screenshot(page, "email_submit_not_clicked")
 
         # ── 8. Handle post-email pages (OTP / password / about_you) ──
         # State machine loop to handle whatever page comes next
@@ -4122,6 +4165,7 @@ def email_login(
                     _log("  >>> Email input on chatgpt.com login modal — re-filling and submitting...")
                     _save_screenshot(page, f"email_retry_round{rd + 1}")
                     # Re-find email input
+                    retry_email_el = None
                     for sel in [
                         "input[type='email']",
                         "#emailInput",
@@ -4139,6 +4183,7 @@ def email_login(
                                 page.wait_for_timeout(300)
                                 val = el.input_value()
                                 _log(f"  Re-filled email: '{val}'")
+                                retry_email_el = el
                                 break
                         except Exception:
                             continue
@@ -4149,26 +4194,26 @@ def email_login(
                         otp_before_ids = mailbox.get_current_ids(fake_account)
                         _log(f"  Mailbox re-snapshot: {len(otp_before_ids)} existing emails")
 
-                    # Click Continue
+                    # Reuse the same strict selection as the first submission.
+                    # A retry can otherwise click a social-login control whose
+                    # DOM order differs from the initial modal.
                     clicked_submit = False
-                    for sel in [
-                        "button[type='submit']",
-                        "button:has-text('Continue')",
-                        "button:has-text('Next')",
-                    ]:
-                        try:
-                            btn = page.locator(sel).first
-                            if btn.is_visible(timeout=1000):
-                                text = (btn.text_content() or "").strip()[:50]
-                                _log(f"  Clicking: '{text}' ({sel})")
-                                btn.click(force=True)
+                    try:
+                        if retry_email_el is None:
+                            _log("  [!] Email retry input was not found")
+                        else:
+                            submit, text, skipped = _trusted_email_submit_control(retry_email_el)
+                            for skipped_text in skipped:
+                                _log(f"  Skipping alternative login control: '{skipped_text}'")
+                            if submit is not None:
+                                _log(f"  Clicking trusted email retry submit: '{text}'")
+                                submit.click(force=True)
                                 clicked_submit = True
-                                break
-                        except Exception:
-                            continue
-                    if not clicked_submit:
-                        _log("  [!] Continue button not found — trying Enter key...")
-                        page.keyboard.press("Enter")
+                            else:
+                                _log("  [!] No trusted email retry submit control found")
+                                _save_screenshot(page, f"email_retry_submit_control_not_found_round{rd + 1}")
+                    except Exception as exc:
+                        _log(f"  [!] Could not submit trusted email retry control: {type(exc).__name__}")
                     page.wait_for_timeout(2000)
                     _prev_url = page.url
                     continue
