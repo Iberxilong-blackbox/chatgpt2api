@@ -44,11 +44,14 @@ func (r CommandAccountReloginRunner) Run(ctx context.Context, accountJSON, runID
 	cmd := exec.CommandContext(ctx, r.Python, "run_single_relogin.py", "--account-json", accountJSON, "--clean-stale-cdp", "--timeout", "300", "--run-id", runID)
 	cmd.Dir = r.BundleDir
 	cmd.Env = append(os.Environ(), "DISPLAY="+firstNonEmpty(r.Display, ":99"))
-	_ = cmd.Run() // summary.json is authoritative for both success and expected failures.
+	runErr := cmd.Run() // summary.json is authoritative for both success and expected failures.
 	data, err := os.ReadFile(filepath.Join(r.BundleDir, "runtime", runID, "summary.json"))
 	if err != nil {
 		if ctx.Err() != nil {
 			return AccountReloginSummary{}, ctx.Err()
+		}
+		if runErr != nil {
+			return AccountReloginSummary{}, fmt.Errorf("relogin runner exited before producing summary: %w", runErr)
 		}
 		return AccountReloginSummary{}, fmt.Errorf("relogin runner did not produce summary: %w", err)
 	}
