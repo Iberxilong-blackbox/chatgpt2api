@@ -330,13 +330,18 @@ def main() -> int:
         completed = subprocess.run(command, cwd=ROOT, env=environment, capture_output=True, text=True, timeout=args.timeout, check=False)
         exit_code = completed.returncode
         timed_out = False
-        script_output = completed.stdout or ""
+        script_output = (completed.stdout or "") + ("\n[stderr]\n" + completed.stderr if completed.stderr else "")
     except subprocess.TimeoutExpired as exc:
         exit_code = None
         timed_out = True
         script_output = exc.stdout or ""
+        script_stderr = exc.stderr or ""
         if isinstance(script_output, bytes):
             script_output = script_output.decode(errors="replace")
+        if isinstance(script_stderr, bytes):
+            script_stderr = script_stderr.decode(errors="replace")
+        if script_stderr:
+            script_output += "\n[stderr]\n" + script_stderr
     log_path.write_text(redact_script_output(script_output, secret_values(payload)), encoding="utf-8")
     set_mode(log_path, 0o600)
     result: dict[str, Any] = {}
