@@ -292,7 +292,7 @@ sudo ./deploy/update.sh --sync-ac
 
 > `--env-set` 直接修改运行目录 `/opt/chatgpt2api/.env`，不会影响源码目录的 `.env`。适合快速开关调试日志、修改超时等场景。
 
-> 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离。当前模板只额外允许写入 `/opt/chatgpt2api/data` 和 `/opt/chatgpt2api/.env`，用于运行数据和设置页保存配置。
+> 服务文件中的 `ProtectSystem=strict` 和 `NoNewPrivileges=yes` 提供了基础沙箱隔离。当前模板只额外允许写入运行数据、email-relogin 的受限运行产物目录，以及 `/opt/chatgpt2api/.env`。
 
 #### 5. 设置页保存配置的安全边界
 
@@ -300,7 +300,7 @@ sudo ./deploy/update.sh --sync-ac
 
 ```ini
 ProtectSystem=strict
-ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/.env
+ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/email-relogin/runtime /opt/chatgpt2api/email-relogin/output /opt/chatgpt2api/.env
 ```
 
 其中 `/opt/chatgpt2api/.env` 是为了允许后台“设置”页面保存全局配置。如果你的服务器之前已经安装过旧版 service 文件，仍然可能遇到：
