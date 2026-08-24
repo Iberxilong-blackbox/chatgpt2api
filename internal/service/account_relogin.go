@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -44,14 +45,14 @@ func (r CommandAccountReloginRunner) Run(ctx context.Context, accountJSON, runID
 	cmd := exec.CommandContext(ctx, r.Python, "run_single_relogin.py", "--account-json", accountJSON, "--clean-stale-cdp", "--timeout", "300", "--run-id", runID)
 	cmd.Dir = r.BundleDir
 	cmd.Env = append(os.Environ(), "DISPLAY="+firstNonEmpty(r.Display, ":99"))
-	runErr := cmd.Run() // summary.json is authoritative for both success and expected failures.
+	output, runErr := cmd.CombinedOutput() // summary.json is authoritative for both success and expected failures.
 	data, err := os.ReadFile(filepath.Join(r.BundleDir, "runtime", runID, "summary.json"))
 	if err != nil {
 		if ctx.Err() != nil {
 			return AccountReloginSummary{}, ctx.Err()
 		}
 		if runErr != nil {
-			return AccountReloginSummary{}, fmt.Errorf("relogin runner exited before producing summary: %w", runErr)
+			return AccountReloginSummary{}, fmt.Errorf("relogin runner exited before producing summary: %w (%s)", runErr, redactRunnerDiagnostic(output))
 		}
 		return AccountReloginSummary{}, fmt.Errorf("relogin runner did not produce summary: %w", err)
 	}
@@ -60,6 +61,25 @@ func (r CommandAccountReloginRunner) Run(ctx context.Context, accountJSON, runID
 		return AccountReloginSummary{}, fmt.Errorf("invalid relogin summary: %w", err)
 	}
 	return summary, nil
+}
+
+var (
+	emailDiagnosticRE = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+`)
+	secretDiagnosticRE = regexp.MustCompile(`(?i)(access[_ -]?token|session[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|totp(?:[_ -]?secret)?|cookie|proxy)\s*[:=]\s*[^\s,}\]]+`)
+)
+
+func redactRunnerDiagnostic(output []byte) string {
+	text := strings.TrimSpace(string(output))
+	if text == "" {
+		return "no process output"
+	}
+	text = emailDiagnosticRE.ReplaceAllString(text, "[REDACTED_EMAIL]")
+	text = secretDiagnosticRE.ReplaceAllString(text, "$1=[REDACTED]")
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) > 240 {
+		return text[:240] + "..."
+	}
+	return text
 }
 
 type AccountReloginService struct {
