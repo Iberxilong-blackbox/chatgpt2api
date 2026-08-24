@@ -20,11 +20,11 @@ import (
 const accountReloginTimeout = 6 * time.Minute
 
 type AccountReloginSummary struct {
-	Status                    string `json:"status"`
-	Stage                     string `json:"stage"`
-	ErrorMessage              string `json:"error_message"`
-	SourceJSONUpdated         bool   `json:"source_json_updated"`
-	SourceDeactivationMarked  bool   `json:"source_deactivation_marked"`
+	Status                   string `json:"status"`
+	Stage                    string `json:"stage"`
+	ErrorMessage             string `json:"error_message"`
+	SourceJSONUpdated        bool   `json:"source_json_updated"`
+	SourceDeactivationMarked bool   `json:"source_deactivation_marked"`
 }
 
 type AccountReloginRunner interface {

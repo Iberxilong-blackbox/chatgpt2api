@@ -357,7 +357,7 @@ func (s *AccountService) AddAccountRecords(records []map[string]any) map[string]
 		"skipped":        skipped,
 	})
 	return map[string]any{"added": added, "updated": updated, "skipped": skipped, "items": items}
-	}
+}
 
 func removeString(slice []string, s string) []string {
 	for i, v := range slice {
