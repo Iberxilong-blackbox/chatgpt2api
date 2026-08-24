@@ -303,6 +303,19 @@ ProtectSystem=strict
 ReadWritePaths=/opt/chatgpt2api/data /opt/chatgpt2api/email-relogin/runtime /opt/chatgpt2api/email-relogin/output /opt/chatgpt2api/.env
 ```
 
+The service HOME is `/opt/chatgpt2api/data/home`, which must be owned by the
+`chatgpt2api` user. This keeps browser and PostgreSQL client state writable
+while `ProtectSystem=strict` and `ProtectHome=yes` remain enabled.
+
+Do not set `NoNewPrivileges=yes` for this unit while browser relogin is
+enabled. Google Chrome needs its own setuid sandbox to create browser
+namespaces; the unit keeps its filesystem protections instead of launching
+Chrome with `--no-sandbox`.
+
+The relogin wrapper allows the browser flow up to 600 seconds. The service
+context adds one minute so the wrapper can write its final `summary.json`
+instead of being cancelled while it is classifying an OTP or TOTP failure.
+
 其中 `/opt/chatgpt2api/.env` 是为了允许后台“设置”页面保存全局配置。如果你的服务器之前已经安装过旧版 service 文件，仍然可能遇到：
 
 ```json

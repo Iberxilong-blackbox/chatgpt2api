@@ -12,11 +12,11 @@ ExecStart=/opt/chatgpt2api/chatgpt2api
 Restart=on-failure
 RestartSec=5s
 
-# 将 HOME 指向应用目录，避免 ProtectHome=yes 导致 PostgreSQL 驱动读取 ~/.postgresql 时报权限错误
-Environment=HOME=/opt/chatgpt2api
+# Keep application and browser state in a writable path under the systemd sandbox.
+Environment=HOME=/opt/chatgpt2api/data/home
 
-# 安全加固
-NoNewPrivileges=yes
+# Chrome requires its setuid sandbox to create browser namespaces.
+# Keep the systemd filesystem sandboxing below; do not disable Chrome sandbox.
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes

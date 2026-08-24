@@ -18,7 +18,10 @@ import (
 	"chatgpt2api/internal/util"
 )
 
-const accountReloginTimeout = 6 * time.Minute
+const (
+	accountReloginRunnerTimeout = 10 * time.Minute
+	accountReloginTimeout       = accountReloginRunnerTimeout + time.Minute
+)
 
 type AccountReloginSummary struct {
 	Status                   string `json:"status"`
@@ -42,7 +45,7 @@ func (r CommandAccountReloginRunner) Run(ctx context.Context, accountJSON, runID
 	if r.BundleDir == "" || r.Python == "" {
 		return AccountReloginSummary{}, errors.New("email relogin runner is not configured")
 	}
-	cmd := exec.CommandContext(ctx, r.Python, "run_single_relogin.py", "--account-json", accountJSON, "--clean-stale-cdp", "--timeout", "300", "--run-id", runID)
+	cmd := exec.CommandContext(ctx, r.Python, "run_single_relogin.py", "--account-json", accountJSON, "--clean-stale-cdp", "--timeout", "600", "--run-id", runID)
 	cmd.Dir = r.BundleDir
 	cmd.Env = append(os.Environ(), "DISPLAY="+firstNonEmpty(r.Display, ":99"))
 	output, runErr := cmd.CombinedOutput() // summary.json is authoritative for both success and expected failures.

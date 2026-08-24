@@ -281,7 +281,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run one isolated email-relogin attempt")
     parser.add_argument("--account-json", type=Path, required=False, help="Local account JSON; copied into this run directory")
     parser.add_argument("--run-id", default="", help="Optional safe run identifier")
-    parser.add_argument("--timeout", type=int, default=300, help="Maximum script runtime in seconds")
+    parser.add_argument("--timeout", type=int, default=600, help="Maximum script runtime in seconds")
     parser.add_argument("--clean-stale-cdp", action="store_true", help="Clear a Chrome process listening on CDP 9224 before running")
     parser.add_argument("--preflight-only", action="store_true", help="Write environment checks without running a login")
     args = parser.parse_args()
