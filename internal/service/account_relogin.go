@@ -64,7 +64,7 @@ func (r CommandAccountReloginRunner) Run(ctx context.Context, accountJSON, runID
 }
 
 var (
-	emailDiagnosticRE = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+`)
+	emailDiagnosticRE  = regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+`)
 	secretDiagnosticRE = regexp.MustCompile(`(?i)(access[_ -]?token|session[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|totp(?:[_ -]?secret)?|cookie|proxy)\s*[:=]\s*[^\s,}\]]+`)
 )
 
