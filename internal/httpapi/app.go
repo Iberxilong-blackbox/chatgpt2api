@@ -100,6 +100,29 @@ func NewApp() (*App, error) {
 		if added > 0 || len(errors) > 0 {
 			logger.Info("auto-import scan completed", "added", added, "errors", len(errors))
 		}
+		deactivated, disabled, err := accounts.ReconcileDeactivatedImportedAccounts(importDir)
+		if err != nil {
+			logger.Warning("deactivated-account reconciliation failed", "error", err.Error())
+		} else if disabled > 0 {
+			logger.Info("deactivated accounts disabled", "deactivated", deactivated, "disabled", disabled)
+		}
+	}()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				_, disabled, err := accounts.ReconcileDeactivatedImportedAccounts(importDir)
+				if err != nil {
+					logger.Warning("deactivated-account reconciliation failed", "error", err.Error())
+				} else if disabled > 0 {
+					logger.Info("deactivated accounts disabled", "disabled", disabled)
+				}
+			}
+		}
 	}()
 	auth := service.NewAuthService(storageBackend)
 	billing := service.NewBillingService(storageBackend, cfg)
