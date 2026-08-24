@@ -21,9 +21,16 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = ROOT / "runtime"
+CANDIDATE_STATE_PATH = RUNTIME_ROOT / "candidate-state.json"
 CDP_PORT = 9224
 REQUIRED_CONFIGS = (ROOT / "config.json", ROOT / "config.jsonc")
 REQUIRED_MODULES = ("playwright", "pyotp", "curl_cffi")
+AUTH_TOKEN_KEY_NAMES = {
+    "accesstoken",
+    "sessiontoken",
+    "refreshtoken",
+    "idtoken",
+}
 
 
 def set_mode(path: Path, mode: int) -> None:
@@ -122,6 +129,8 @@ def validate_account_input(path: Path) -> dict[str, Any]:
         raise ValueError("M1 only supports @zainy.art accounts")
     if not str(payload.get("password", "")).strip():
         raise ValueError("account JSON is missing password")
+    if payload.get("is-ban") is True:
+        raise ValueError("account JSON is marked is-ban=true and cannot be relogged")
     return payload
 
 
@@ -202,6 +211,66 @@ def persist_verified_session(source: Path, refreshed_copy: Path, expected_source
         os.replace(temporary, source)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any], mode: int, *, ensure_ascii: bool) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, ensure_ascii=ensure_ascii, indent=2) + "\n", encoding="utf-8")
+        set_mode(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def clear_auth_tokens(payload: Any) -> None:
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            normalized_key = "".join(character for character in str(key).lower() if character.isalnum())
+            if normalized_key in AUTH_TOKEN_KEY_NAMES:
+                payload[key] = ""
+            else:
+                clear_auth_tokens(value)
+    elif isinstance(payload, list):
+        for value in payload:
+            clear_auth_tokens(value)
+
+
+def mark_source_deactivated(source: Path, expected_source_sha256: str) -> str:
+    """Mark a source account as unusable only after an explicit OpenAI response."""
+    current_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    if current_sha256 != expected_source_sha256:
+        raise RuntimeError("source account JSON changed during relogin; refusing to mark it deactivated")
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("source account JSON must be an object")
+    clear_auth_tokens(payload)
+    payload["is-ban"] = True
+    payload["success"] = False
+    payload["stage"] = "account_deactivated"
+    payload["error_message"] = "Account has been deleted or deactivated by OpenAI (account_deactivated)"
+    payload["session_refreshed_at"] = iso_now()
+    source_mode = stat.S_IMODE(source.stat().st_mode)
+    atomic_write_json(source, payload, source_mode, ensure_ascii=False)
+    return hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def record_deactivated_candidate(source_sha256: str) -> None:
+    """Store only the deactivated source hash so future M1 runs skip it."""
+    state: dict[str, Any] = {}
+    if CANDIDATE_STATE_PATH.exists():
+        loaded = json.loads(CANDIDATE_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            state = loaded
+    confirmed = {item for item in state.get("confirmed_deactivated_sha256", []) if isinstance(item, str)}
+    tested = {item for item in state.get("tested_sha256", []) if isinstance(item, str)}
+    confirmed.add(source_sha256)
+    tested.add(source_sha256)
+    state["confirmed_deactivated_sha256"] = sorted(confirmed)
+    state["tested_sha256"] = sorted(tested)
+    state["notes"] = "SHA-256-only candidate state; no account identifiers or credentials."
+    state_mode = stat.S_IMODE(CANDIDATE_STATE_PATH.stat().st_mode) if CANDIDATE_STATE_PATH.exists() else 0o600
+    atomic_write_json(CANDIDATE_STATE_PATH, state, state_mode, ensure_ascii=True)
 
 
 def main() -> int:
@@ -297,6 +366,8 @@ def main() -> int:
             summary_account["has_session_token"] = False
     verified_success = exit_code == 0 and script_succeeded and result.get("success") is True
     persisted_source = False
+    deactivation_marked = False
+    deactivation_marker_error = ""
     if verified_success:
         try:
             persist_verified_session(args.account_json, account_copy, source_sha256)
@@ -305,6 +376,13 @@ def main() -> int:
             verified_success = False
             stage = "session_persist_failed"
             error_message = redact_text(exc)
+    elif stage == "account_deactivated":
+        try:
+            deactivated_source_sha256 = mark_source_deactivated(args.account_json, source_sha256)
+            record_deactivated_candidate(deactivated_source_sha256)
+            deactivation_marked = True
+        except Exception as exc:
+            deactivation_marker_error = redact_text(exc)
     summary = {
         "run_id": run_id,
         "status": "success" if verified_success else "failed",
@@ -316,6 +394,8 @@ def main() -> int:
         "error_message": error_message,
         "account": summary_account,
         "source_json_updated": persisted_source,
+        "source_deactivation_marked": deactivation_marked,
+        "source_deactivation_marker_error": deactivation_marker_error,
         "screenshot_count": len(list(screenshots_dir.glob("*.png"))),
         "log_file": "run.log",
     }
