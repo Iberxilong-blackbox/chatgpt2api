@@ -320,6 +320,22 @@ export type AccountRefreshResult = {
   restore_at?: string | null;
 };
 
+export type AccountReloginResult = {
+  account_id: string;
+  success: boolean;
+  stage?: string;
+  error?: string;
+  duration_ms?: number;
+  source_json_updated?: boolean;
+  source_deactivation_marked?: boolean;
+  removed?: boolean;
+};
+
+type AccountReloginResponse = {
+  result: AccountReloginResult;
+  items: Account[];
+};
+
 type AccountRefreshResponse = {
   items: Account[];
   refreshed: number;
@@ -978,6 +994,13 @@ export async function refreshAccounts(accountIds: string[]) {
   return httpRequest<AccountRefreshResponse>("/api/accounts/refresh", {
     method: "POST",
     body: { account_ids: accountIds },
+  });
+}
+
+export async function reloginAccount(accountId: string) {
+  return httpRequest<AccountReloginResponse>("/api/accounts/relogin", {
+    method: "POST",
+    body: { account_id: accountId },
   });
 }
 

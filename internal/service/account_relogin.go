@@ -128,6 +128,7 @@ func (s *AccountReloginService) ReloginAccount(ctx context.Context, accountID st
 	case "account_deactivated":
 		removed := util.ToInt(s.accounts.DeleteAccounts([]string{oldAccessToken})["removed"], 0)
 		result["removed"] = removed == 1
+		result["source_deactivation_marked"] = summary.SourceDeactivationMarked
 		result["stage"] = summary.Stage
 		result["error"] = firstNonEmpty(summary.ErrorMessage, "account deactivated")
 		result["duration_ms"] = time.Since(started).Milliseconds()
@@ -146,6 +147,7 @@ func (s *AccountReloginService) ReloginAccount(ctx context.Context, accountID st
 	}
 	result["success"] = true
 	result["stage"] = firstNonEmpty(summary.Stage, "session_fetched")
+	result["source_json_updated"] = summary.SourceJSONUpdated
 	result["duration_ms"] = time.Since(started).Milliseconds()
 	return result
 }

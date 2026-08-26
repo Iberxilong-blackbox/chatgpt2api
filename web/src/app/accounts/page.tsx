@@ -13,6 +13,7 @@ import {
   Download,
   Flame,
   LoaderCircle,
+  LogIn,
   Pencil,
   Play,
   RefreshCw,
@@ -58,10 +59,12 @@ import {
   fetchAccounts,
   getWarmingStatus,
   refreshAccounts,
+  reloginAccount,
   startWarming,
   stopWarming,
   updateAccount,
   type Account,
+  type AccountReloginResult,
   type AccountStatus,
   type AccountType,
   type ReservoirSnapshot,
@@ -404,6 +407,8 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const [diagnoseResult, setDiagnoseResult] = useState<DiagnoseResult | null>(null);
   const [diagnoseAccountId, setDiagnoseAccountId] = useState<string | null>(null);
   const [refreshingAccountIds, setRefreshingAccountIds] = useState<string[]>([]);
+  const [reloginAccountId, setReloginAccountId] = useState<string | null>(null);
+  const [reloginResult, setReloginResult] = useState<AccountReloginResult | null>(null);
   const [reservoirSnapshot, setReservoirSnapshot] = useState<ReservoirSnapshot | null>(null);
   const [isReservoirLoading, setIsReservoirLoading] = useState(false);
   const [isReservoirActionRunning, setIsReservoirActionRunning] = useState(false);
@@ -412,6 +417,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
   const canImportSessionAccounts = hasAPIPermission(session, "POST", "/api/accounts/session");
   const canImportAccounts = canImportTokenAccounts || canImportSessionAccounts;
   const canRefreshAccounts = hasAPIPermission(session, "POST", "/api/accounts/refresh");
+  const canReloginAccounts = hasAPIPermission(session, "POST", "/api/accounts/relogin");
   const canUpdateAccount = hasAPIPermission(session, "POST", "/api/accounts/update");
   const canDeleteAccounts = hasAPIPermission(session, "DELETE", "/api/accounts");
   const canExportTokens = hasAPIPermission(session, "GET", "/api/accounts/tokens");
@@ -927,6 +933,31 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
     );
   };
 
+  const handleReloginAccount = async (accountId: string) => {
+    if (!canReloginAccounts || reloginAccountId) {
+      return;
+    }
+    setReloginAccountId(accountId);
+    setReloginResult(null);
+    try {
+      const data = await reloginAccount(accountId);
+      applyAccountItems(data.items);
+      setReloginResult(data.result);
+      if (data.result.success) {
+        window.dispatchEvent(new Event(QUOTA_REFRESH_EVENT));
+        toast.success("账号重新登录成功，会话已更新");
+      } else {
+        toast.error(`账号重新登录失败：${data.result.stage ?? "未知阶段"}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "调用重新登录失败";
+      setReloginResult({ account_id: accountId, success: false, stage: "request_failed", error: message });
+      toast.error(message);
+    } finally {
+      setReloginAccountId(null);
+    }
+  };
+
   const renderRefreshDiagnostic = (account: Account) => {
     if (!account.lastRefreshError) return null;
     const stage = refreshErrorStageLabels[account.lastRefreshErrorStage ?? ""] ?? account.lastRefreshErrorStage ?? "远端验证";
@@ -1002,6 +1033,7 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
 
   const renderAccountActions = (account: Account, className?: string) => {
     const rowRefreshing = refreshingAccountIdSet.has(account.id);
+    const canRetryRelogin = account.status === "异常" || account.status === "过期待刷新";
     return (
       <div className={cn("flex items-center gap-1 text-muted-foreground", className)}>
         {canUpdateAccount ? (
@@ -1030,6 +1062,20 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
             title="刷新账号信息和额度"
           >
             {rowRefreshing ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+          </Button>
+        ) : null}
+        {canReloginAccounts && canRetryRelogin ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 rounded-lg text-amber-700 hover:bg-amber-50 hover:text-amber-800"
+            onClick={() => void handleReloginAccount(account.id)}
+            disabled={Boolean(reloginAccountId) || isRefreshing || isDeleting}
+            aria-label="重新登录账号"
+            title="重新登录账号"
+          >
+            {reloginAccountId === account.id ? <LoaderCircle className="size-4 animate-spin" /> : <LogIn className="size-4" />}
           </Button>
         ) : null}
         <Button
@@ -1213,6 +1259,62 @@ function AccountsPageContent({ session }: { session: StoredAuthSession }) {
             >
               {isUpdating ? <LoaderCircle className="size-4 animate-spin" /> : null}
               保存修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(reloginResult) || Boolean(reloginAccountId)}
+        onOpenChange={(open) => {
+          if (!open && !reloginAccountId) {
+            setReloginResult(null);
+          }
+        }}
+      >
+        <DialogContent showCloseButton={false} className="rounded-2xl p-6">
+          <DialogHeader className="gap-2">
+            <DialogTitle>重新登录结果</DialogTitle>
+            <DialogDescription>浏览器登录、会话获取和账号文件回写的结果</DialogDescription>
+          </DialogHeader>
+          {reloginAccountId ? (
+            <div className="flex flex-col items-center justify-center gap-3 py-8">
+              <LoaderCircle className="size-6 animate-spin text-amber-600" />
+              <p className="text-sm text-stone-600">正在执行重新登录，请等待浏览器流程完成…</p>
+            </div>
+          ) : reloginResult ? (
+            <div className="space-y-3">
+              <div className={cn(
+                "rounded-xl border p-4",
+                reloginResult.success ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50",
+              )}>
+                <p className="text-sm font-medium text-stone-700">
+                  {reloginResult.success ? "重新登录成功" : "重新登录失败"}
+                </p>
+                <p className="mt-1 text-sm text-stone-600">阶段：{reloginResult.stage ?? "未知"}</p>
+                {reloginResult.success ? (
+                  <p className="mt-2 text-sm text-emerald-700">
+                    JSON 持久化：{reloginResult.source_json_updated ? "已更新" : "未确认"}
+                  </p>
+                ) : null}
+                {reloginResult.error ? <p className="mt-2 break-words text-sm text-rose-700">{reloginResult.error}</p> : null}
+                {typeof reloginResult.duration_ms === "number" ? (
+                  <p className="mt-2 text-xs text-stone-500">耗时：{Math.round(reloginResult.duration_ms / 1000)} 秒</p>
+                ) : null}
+              </div>
+              {!reloginResult.success && reloginResult.stage === "account_deactivated" ? (
+                <p className="text-sm leading-6 text-stone-600">该账号已被标记为停用，并从账号池移除。</p>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter className="pt-2">
+            <Button
+              variant="secondary"
+              className="h-10 rounded-xl bg-stone-100 px-5 text-stone-700 hover:bg-stone-200"
+              onClick={() => setReloginResult(null)}
+              disabled={Boolean(reloginAccountId)}
+            >
+              关闭
             </Button>
           </DialogFooter>
         </DialogContent>
