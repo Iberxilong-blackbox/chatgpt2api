@@ -104,7 +104,57 @@ func browserHTTPClientForProfile(proxy, profile string, timeout time.Duration) *
 	if err != nil {
 		return &http.Client{Timeout: timeout, Transport: transportForProxy(proxy)}
 	}
-	return client.Std()
+	std := client.Std()
+	if usesFirefoxImpersonation(profile) {
+		std.Transport = &firefoxHeaderTransport{base: std.Transport}
+	}
+	return std
+}
+
+// usesFirefoxImpersonation reports which browser family applyBrowserProfile
+// picks. Experiment 2 (docs/exp/cloudflare-403-diagnosis.md) moved every profile
+// to Firefox because Cloudflare flags surf's Chrome fingerprint ecosystem.
+func usesFirefoxImpersonation(string) bool {
+	return true
+}
+
+// firefoxHeaderTransport drops Chromium-only client hint headers (Sec-Ch-*).
+// Account fingerprints are Chrome-shaped, but surf sends a Firefox TLS/H2
+// fingerprint and Firefox User-Agent; real Firefox never sends client hints, so
+// the mix is an obvious bot signal to Cloudflare.
+type firefoxHeaderTransport struct {
+	base http.RoundTripper
+}
+
+func (t *firefoxHeaderTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if hasClientHintHeaders(req.Header) {
+		req = req.Clone(req.Context())
+		for key := range req.Header {
+			if isClientHintHeader(key) {
+				delete(req.Header, key)
+			}
+		}
+	}
+	return t.base.RoundTrip(req)
+}
+
+func (t *firefoxHeaderTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
+func hasClientHintHeaders(header http.Header) bool {
+	for key := range header {
+		if isClientHintHeader(key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isClientHintHeader(key string) bool {
+	return strings.HasPrefix(strings.ToLower(key), "sec-ch-")
 }
 
 func applyBrowserProfile(builder *surf.Builder, profile string) *surf.Builder {
@@ -122,13 +172,10 @@ func applyBrowserProfile(builder *surf.Builder, profile string) *surf.Builder {
 	default:
 		impersonate = impersonate.Windows()
 	}
-	if strings.Contains(normalized, "firefox") || strings.Contains(normalized, "ff") {
+	if usesFirefoxImpersonation(profile) {
 		return impersonate.Firefox()
 	}
-	// Experiment 2: Chrome fingerprint ecosystem (TLS + H2 SETTINGS) is under active
-	// Cloudflare detection. Try Firefox impersonation — different TLS fingerprint family,
-	// different H2 SETTINGS, different headers. Fully coherent within the Firefox ecosystem.
-	return impersonate.Firefox()
+	return impersonate.Chrome()
 }
 
 func transportForProxy(candidate string) *http.Transport {

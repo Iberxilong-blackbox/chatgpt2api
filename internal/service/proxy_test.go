@@ -88,3 +88,36 @@ func TestBrowserHTTPClientPreservesCallerAuthHeaders(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }
+
+func TestBrowserHTTPClientDropsChromiumClientHints(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for key := range r.Header {
+			if isClientHintHeader(key) {
+				t.Errorf("client hint header %q should not be sent with Firefox impersonation", key)
+			}
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-1" {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := browserHTTPClient("", 2*time.Second)
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer token-1")
+	req.Header.Set("Sec-Ch-Ua", `"Google Chrome";v="145"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if req.Header.Get("Sec-Ch-Ua") == "" {
+		t.Fatal("caller request headers must not be mutated")
+	}
+}

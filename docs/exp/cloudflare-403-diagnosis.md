@@ -327,7 +327,7 @@ surf 的 `Impersonate().Firefox()` 内部使用：
 
 **根因结论**：Cloudflare 的检测不是针对单个 TLS 指纹参数，而是针对 **完整的浏览器连接特征集**（TLS ClientHello + H2 connection preface + HTTP headers 组合）。surf 的 `Impersonate().Chrome()` 构建的整套 Chrome 145 特征被整体识别为假浏览器。换成 Firefox 生态系后，所有层面的特征都来自真实 Firefox，Cloudflare 无法区分。
 
-**副作用**：Firefox 冒充的 header 集合中不含 `Sec-CH-UA` / `Sec-CH-UA-Mobile` / `Sec-CH-UA-Platform` 等 Chromium 特有 headers，但 Cloudflare 对此容忍（非 Chromium 浏览器本身就没有这些 header）。
+**副作用**：~~Firefox 冒充的 header 集合中不含 `Sec-CH-UA` 等 Chromium 特有 headers~~。**更正（2026-09-23）**：surf 自己不加这些头，但我们的代码按账号指纹（Chrome 形态）主动设置了 `Sec-Ch-Ua*`，surf 不会删除，所以它们一直随 Firefox 指纹一起发出去。这正是实验 3 找到的问题。
 
 ---
 
@@ -348,3 +348,33 @@ surf 的 `Impersonate().Firefox()` 内部使用：
 **修复**：`internal/service/proxy.go` 中 `applyBrowserProfile()` 将默认冒充从 `impersonate.Chrome()` 替换为 `impersonate.Firefox()`。
 
 **效果**：Firefox 生态系的 TLS 指纹 + H2 SETTINGS + HTTP headers 三者一致，全部来自真实 Firefox 流量，Cloudflare 无法识别为自动化工具。
+
+---
+
+## 实验 3：去掉 Chromium 专属的 `Sec-Ch-Ua*` 请求头（2026-09-23）
+
+**现象**：2026-09-16 起，bootstrap（`GET https://chatgpt.com/`）又开始大量返回 `cf-mitigated: challenge`，同一段时间有的请求能过，有的被拦。
+
+**抓包确认实际发出的请求头**（Desi 上用生产同款 `BrowserHTTPClientWithProfile` 请求 `https://httpbin.org/headers`）：
+
+- `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0`：surf 覆盖了我们设置的 Chrome UA
+- JA4 `t13d1715h2_...`、H2 `1:65536;2:0;4:131072;5:16384|12517377|0|m,p,a,s`：Firefox
+- **`Sec-Ch-Ua: "Google Chrome";v="145"`：我们代码设置的，surf 没有删除**
+
+真实的 Firefox 从来不发 client hints，"Firefox 指纹 + Chrome client hints"是明显的机器人特征。
+
+**对照实验**：同一出口 IP（`165.232.144.147`）、同一 surf Firefox 客户端、同一时间段，交替发送带和不带 `Sec-Ch-Ua` / `-Mobile` / `-Platform` 的 bootstrap，共两轮，每轮每组 12 次。实验程序为 `.runtime-evidence/cfprobe/main.go`，未提交。
+
+| 组 | 200 | 403 challenge | 超时 | 完成请求中的挑战率 |
+|---|---|---|---|---|
+| 带 `Sec-Ch-Ua*`（原生产行为） | 10 | 8 | 6 | 44%（8/18） |
+| 不带 `Sec-Ch-Ua*` | 16 | 0 | 8 | 0%（0/16） |
+
+超时是 Psiphon 线路本身的问题，两组差不多。
+
+**修复**：
+
+1. `internal/service/proxy.go`：使用 Firefox 模拟时，在 transport 层统一去掉所有 `Sec-Ch-*` 请求头（`firefoxHeaderTransport`），覆盖 bootstrap、账号刷新和所有 API 请求。
+2. 每个账号共享一个浏览器会话（`internal/service/browser_session.go`）：账号刷新路径和正式请求路径共用同一个 cookie jar，Cloudflare 发的 `__cf_bm` 等 cookie 会被带上；同一个账号 10 分钟内成功 bootstrap 过，就复用缓存的首页数据（PoW 脚本、`dataBuild`、`ClientVersion`），不再重复 `GET /`。bootstrap 失败时清空该账号的会话。`DiagnoseSession` 始终真实访问首页。
+
+**仍未统一的部分**：Sentinel 层（PoW 配置、turnstile、SO collector）里内嵌的 UA 仍然是 Chrome（账号指纹 Chrome/145，turnstile 默认 Chrome/147，SO 写死 Chrome/146），平台是 `Win32`、厂商是 `Google Inc.`。这一层不影响 Cloudflare，只影响 OpenAI 自己的风控，改动面大，暂未处理。
