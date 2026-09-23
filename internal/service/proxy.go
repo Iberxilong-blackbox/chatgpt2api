@@ -24,11 +24,12 @@ type ProxyConfig interface {
 }
 
 type ProxyService struct {
-	config ProxyConfig
+	config   ProxyConfig
+	sessions *browserSessionStore
 }
 
 func NewProxyService(config ProxyConfig) *ProxyService {
-	return &ProxyService{config: config}
+	return &ProxyService{config: config, sessions: newBrowserSessionStore()}
 }
 
 func HTTPClientForProxy(proxy string, timeout time.Duration) *http.Client {

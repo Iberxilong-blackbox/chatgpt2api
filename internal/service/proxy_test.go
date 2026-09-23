@@ -89,6 +89,10 @@ func TestBrowserHTTPClientPreservesCallerAuthHeaders(t *testing.T) {
 	}
 }
 
+type staticProxyConfig string
+
+func (p staticProxyConfig) Proxy() string { return string(p) }
+
 func TestBrowserHTTPClientDropsChromiumClientHints(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for key := range r.Header {
@@ -120,4 +124,69 @@ func TestBrowserHTTPClientDropsChromiumClientHints(t *testing.T) {
 	if req.Header.Get("Sec-Ch-Ua") == "" {
 		t.Fatal("caller request headers must not be mutated")
 	}
+}
+
+func TestBrowserSessionSharesCookiesPerAccount(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/set" {
+			http.SetCookie(w, &http.Cookie{Name: "__cf_bm", Value: "abc", Path: "/"})
+			return
+		}
+		if cookie, err := r.Cookie("__cf_bm"); err == nil {
+			_, _ = w.Write([]byte(cookie.Value))
+		}
+	}))
+	defer server.Close()
+
+	svc := NewProxyService(staticProxyConfig(""))
+	get := func(key, path string) string {
+		client := svc.BrowserHTTPClientWithProfile("", 2*time.Second)
+		svc.AttachBrowserSession(client, key)
+		resp, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body := make([]byte, 16)
+		n, _ := resp.Body.Read(body)
+		return string(body[:n])
+	}
+
+	get("account-a", "/set")
+	if got := get("account-a", "/read"); got != "abc" {
+		t.Fatalf("same account new client cookie = %q, want abc", got)
+	}
+	if got := get("account-b", "/read"); got != "" {
+		t.Fatalf("other account cookie = %q, want none", got)
+	}
+	svc.ResetBrowserSession("account-a")
+	if got := get("account-a", "/read"); got != "" {
+		t.Fatalf("cookie after reset = %q, want none", got)
+	}
+}
+
+func TestBrowserSessionBootstrapReuse(t *testing.T) {
+	svc := NewProxyService(staticProxyConfig(""))
+	if _, ok := svc.RecentBrowserBootstrap("account-a"); ok {
+		t.Fatal("no bootstrap recorded yet")
+	}
+	svc.MarkBrowserBootstrapped("account-a", "<html>page</html>")
+	page, ok := svc.RecentBrowserBootstrap("account-a")
+	if !ok || page != "<html>page</html>" {
+		t.Fatalf("RecentBrowserBootstrap = %q, %v", page, ok)
+	}
+	if _, ok := svc.RecentBrowserBootstrap("account-b"); ok {
+		t.Fatal("bootstrap must be tracked per account")
+	}
+	if _, ok := svc.RecentBrowserBootstrap(""); ok {
+		t.Fatal("anonymous sessions must never reuse a bootstrap")
+	}
+	svc.sessions.sessions["account-a"].bootstrappedAt = time.Now().Add(-BrowserSessionBootstrapTTL - time.Second)
+	if _, ok := svc.RecentBrowserBootstrap("account-a"); ok {
+		t.Fatal("expired bootstrap must not be reused")
+	}
+	var nilSvc *ProxyService
+	nilSvc.MarkBrowserBootstrapped("account-a", "x")
+	nilSvc.ResetBrowserSession("account-a")
+	nilSvc.AttachBrowserSession(&http.Client{}, "account-a")
 }

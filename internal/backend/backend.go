@@ -69,6 +69,7 @@ type Client struct {
 	lookup       AccountLookup
 	proxy        *service.ProxyService
 	httpClient   *http.Client
+	sessionKey   string // shared browser session (cookies + bootstrap) key; "" = not shared
 	fp           map[string]string
 	userAgent    string
 	deviceID     string
@@ -105,6 +106,8 @@ func NewClient(accessToken string, lookup AccountLookup, proxy *service.ProxySer
 	c.deviceID = c.fp["oai-device-id"]
 	c.sessionID = c.fp["oai-session-id"]
 	c.httpClient = proxy.BrowserHTTPClientWithProfile(c.fp["impersonate"], 300*time.Second)
+	c.sessionKey = service.BrowserSessionKey(c.AccessToken)
+	proxy.AttachBrowserSession(c.httpClient, c.sessionKey)
 	return c
 }
 
@@ -411,8 +414,22 @@ func (c *Client) bootstrapHeaders() map[string]string {
 	}
 }
 
+// Bootstrap loads https://chatgpt.com/ like a browser tab. When the same account
+// already loaded it recently in the shared browser session (e.g. during the
+// account refresh right before an image request), the cached page is reused
+// instead of fetching it again.
 func (c *Client) Bootstrap(ctx context.Context) error {
+	return c.bootstrap(ctx, true)
+}
+
+func (c *Client) bootstrap(ctx context.Context, allowReuse bool) error {
 	c.powTimeOrigin = float64(time.Now().UnixMilli())
+	if allowReuse {
+		if page, ok := c.proxy.RecentBrowserBootstrap(c.sessionKey); ok {
+			c.applyBootstrapPage(page)
+			return nil
+		}
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/", nil)
 	for key, value := range c.bootstrapHeaders() {
 		req.Header.Set(key, value)
@@ -424,9 +441,16 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.proxy.ResetBrowserSession(c.sessionKey)
 		return upstreamHTTPError("bootstrap", resp.StatusCode, data)
 	}
-	c.powSources, c.powDataBuild = parsePOWResources(string(data))
+	c.proxy.MarkBrowserBootstrapped(c.sessionKey, string(data))
+	c.applyBootstrapPage(string(data))
+	return nil
+}
+
+func (c *Client) applyBootstrapPage(page string) {
+	c.powSources, c.powDataBuild = parsePOWResources(page)
 	if len(c.powSources) == 0 {
 		c.powSources = []string{defaultPOWScript}
 	}
@@ -434,7 +458,6 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	if parts := regexp.MustCompile(`c/([^/]+)/_`).FindStringSubmatch(c.powDataBuild); len(parts) > 1 {
 		c.ClientVersion = "prod-" + parts[1]
 	}
-	return nil
 }
 
 func (c *Client) getChatRequirements(ctx context.Context) (ChatRequirements, error) {
@@ -1296,8 +1319,8 @@ func (c *Client) DiagnoseSession(ctx context.Context) map[string]any {
 		"conclusion":    "",
 	}
 
-	// Step 1: Bootstrap
-	bootstrapErr := c.Bootstrap(ctx)
+	// Step 1: Bootstrap (always a real page load; diagnostics must not reuse a cached one)
+	bootstrapErr := c.bootstrap(ctx, false)
 	bs := result["bootstrap"].(map[string]any)
 	if bootstrapErr != nil {
 		bs["ok"] = false

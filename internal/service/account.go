@@ -1584,6 +1584,7 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	s.proxy.AttachBrowserSession(client, BrowserSessionKey(accessToken))
 	if err := s.bootstrapRemote(ctx, client, baseURL, accessToken); err != nil {
 		return nil, wrapAccountRefreshError("bootstrap", err)
 	}
@@ -1669,6 +1670,10 @@ func (s *AccountService) FetchRemoteInfo(ctx context.Context, accessToken string
 }
 
 func (s *AccountService) bootstrapRemote(ctx context.Context, client *http.Client, baseURL, accessToken string) error {
+	sessionKey := BrowserSessionKey(accessToken)
+	if _, ok := s.proxy.RecentBrowserBootstrap(sessionKey); ok {
+		return nil
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/", nil)
 	for key, value := range s.remoteBootstrapHeaders(accessToken) {
 		req.Header.Set(key, value)
@@ -1680,8 +1685,10 @@ func (s *AccountService) bootstrapRemote(ctx context.Context, client *http.Clien
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		s.proxy.ResetBrowserSession(sessionKey)
 		return refreshHTTPError("bootstrap", resp.StatusCode, data)
 	}
+	s.proxy.MarkBrowserBootstrapped(sessionKey, string(data))
 	return nil
 }
 
