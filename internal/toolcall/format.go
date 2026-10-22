@@ -1,18 +1,23 @@
 package toolcall
 
 import (
-	"fmt"
+	"crypto/rand"
+	"encoding/hex"
 )
 
-func openAIToolCallID(index int, name string) string {
-	return fmt.Sprintf("call_%d_%s", index, name)
+// NewCallID returns a random tool call id with the given prefix so ids stay
+// unique across turns of the same conversation.
+func NewCallID(prefix string) string {
+	buf := make([]byte, 12)
+	_, _ = rand.Read(buf)
+	return prefix + hex.EncodeToString(buf)
 }
 
 func FormatOpenAI(calls []ParsedCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
-	for i, call := range calls {
+	for _, call := range calls {
 		out = append(out, map[string]any{
-			"id":   openAIToolCallID(i, call.Name),
+			"id":   NewCallID("call_"),
 			"type": "function",
 			"function": map[string]any{
 				"name":      call.Name,
@@ -28,7 +33,7 @@ func FormatOpenAIStream(calls []ParsedCall) []map[string]any {
 	for i, call := range calls {
 		out = append(out, map[string]any{
 			"index": i,
-			"id":    openAIToolCallID(i, call.Name),
+			"id":    NewCallID("call_"),
 			"type":  "function",
 			"function": map[string]any{
 				"name":      call.Name,
@@ -41,10 +46,10 @@ func FormatOpenAIStream(calls []ParsedCall) []map[string]any {
 
 func FormatAnthropic(calls []ParsedCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
-	for i, call := range calls {
+	for _, call := range calls {
 		out = append(out, map[string]any{
 			"type":  "tool_use",
-			"id":    fmt.Sprintf("toolu_%d_%s", i, call.Name),
+			"id":    NewCallID("toolu_"),
 			"name":  call.Name,
 			"input": cloneMap(call.Input),
 		})

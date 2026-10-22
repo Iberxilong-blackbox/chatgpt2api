@@ -26,6 +26,10 @@ func PolicyFromToolChoice(choice any) ChoicePolicy {
 					return ChoicePolicy{Mode: ChoiceForced, Name: name}
 				}
 			}
+			// Responses API puts the function name at the top level.
+			if name := strings.TrimSpace(asString(v["name"])); name != "" {
+				return ChoicePolicy{Mode: ChoiceForced, Name: name}
+			}
 		case "tool":
 			if name := strings.TrimSpace(asString(v["name"])); name != "" {
 				return ChoicePolicy{Mode: ChoiceForced, Name: name}

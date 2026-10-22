@@ -16,6 +16,7 @@ func NormalizeForSchemas(calls []ParsedCall, tools any) []ParsedCall {
 		normalized := ParsedCall{Name: call.Name, Input: cloneMap(call.Input)}
 		if schema, ok := schemas[call.Name]; ok {
 			if schemaMap, ok := schema.(map[string]any); ok {
+				normalized.Input = unwrapSchemaEcho(normalized.Input, schemaMap)
 				if input, ok := normalizeValue(normalized.Input, schemaMap).(map[string]any); ok {
 					normalized.Input = input
 				}
@@ -24,6 +25,33 @@ func NormalizeForSchemas(calls []ParsedCall, tools any) []ParsedCall {
 		out = append(out, normalized)
 	}
 	return out
+}
+
+var schemaEchoKeys = map[string]struct{}{
+	"type": {}, "required": {}, "additionalProperties": {}, "$schema": {}, "title": {}, "description": {},
+}
+
+// unwrapSchemaEcho recovers arguments that a model wrapped in the schema
+// shape, e.g. {"properties":{"city":"Paris"}} or {"type":"object","properties":{...}}.
+func unwrapSchemaEcho(input map[string]any, schema map[string]any) map[string]any {
+	inner, ok := input["properties"].(map[string]any)
+	if !ok {
+		return input
+	}
+	if props, _ := schema["properties"].(map[string]any); props != nil {
+		if _, declared := props["properties"]; declared {
+			return input
+		}
+	}
+	for key := range input {
+		if key == "properties" {
+			continue
+		}
+		if _, ok := schemaEchoKeys[key]; !ok {
+			return input
+		}
+	}
+	return cloneMap(inner)
 }
 
 func normalizeValue(value any, schema map[string]any) any {

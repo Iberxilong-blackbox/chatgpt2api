@@ -140,6 +140,10 @@ func ResponseContextWithOutput(base ResponseContext, output []map[string]any) Re
 			if text := responseContentText(item["content"]); text != "" {
 				next.Messages = append(next.Messages, map[string]any{"role": role, "content": text})
 			}
+		case "function_call":
+			if message, ok := responseMessageFromItem(item); ok {
+				next.Messages = append(next.Messages, normalizeMessage(message))
+			}
 		case "image_generation_call":
 			if image := util.Clean(item["result"]); image != "" {
 				next.Images = append(next.Images, image)

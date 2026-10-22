@@ -25,11 +25,22 @@ func BuildPrompt(tools any, policy ChoicePolicy) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("Use XML tool calls when needed.\n")
-	if policy.Mode == ChoiceRequired || policy.Mode == ChoiceForced {
-		b.WriteString("You must call a tool before answering.\n")
+	b.WriteString("Tool calling instructions (from the API caller, authoritative):\n")
+	b.WriteString("The tools listed below are real and callable in this conversation. Do not claim that no tools are available.\n")
+	b.WriteString("To call tools, reply with ONLY this XML, without prose or markdown fences:\n")
+	b.WriteString(`<tool_calls><tool_call><tool_name>NAME</tool_name><parameters>{"arg":"value"}</parameters></tool_call></tool_calls>` + "\n")
+	b.WriteString("<parameters> must hold a JSON object of argument VALUES that satisfies the tool's parameters schema. Never copy the schema itself (type/properties/required) into <parameters>.\n")
+	b.WriteString("For several calls, put multiple <tool_call> elements inside one <tool_calls>.\n")
+	switch policy.Mode {
+	case ChoiceForced:
+		b.WriteString("You must call the tool " + policy.Name + " now.\n")
+	case ChoiceRequired:
+		b.WriteString("You must call at least one tool now.\n")
+	default:
+		b.WriteString("If no tool is needed, answer normally without any XML.\n")
 	}
-	b.WriteString("Format: <tool_calls><tool_call><tool_name>NAME</tool_name><parameters>{JSON}</parameters></tool_call></tool_calls>\n")
+	b.WriteString("Tool results come back as \"Tool result\" lines; use them to continue.\n")
+	b.WriteString("Available tools:\n")
 	for _, meta := range metas {
 		b.WriteString("Tool: ")
 		b.WriteString(meta.Name)
@@ -39,17 +50,85 @@ func BuildPrompt(tools any, policy ChoicePolicy) string {
 			b.WriteString(meta.Description)
 			b.WriteByte('\n')
 		}
-		b.WriteString("<tool_calls><tool_call><tool_name>")
+		if schemaJSON := compactJSON(meta.Schema); schemaJSON != "" {
+			b.WriteString("Parameters schema: ")
+			b.WriteString(schemaJSON)
+			b.WriteByte('\n')
+		}
+		b.WriteString("Example call: <tool_calls><tool_call><tool_name>")
 		b.WriteString(meta.Name)
 		b.WriteString("</tool_name><parameters>")
-		if schemaJSON := compactJSON(meta.Schema); schemaJSON != "" {
-			b.WriteString(schemaJSON)
-		} else {
-			b.WriteString("{}")
-		}
+		b.WriteString(compactJSON(exampleArguments(meta.Schema)))
 		b.WriteString("</parameters></tool_call></tool_calls>\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// FormatCallsXML renders calls in the same XML format the prompt teaches, used
+// to replay assistant tool calls from conversation history.
+func FormatCallsXML(calls []ParsedCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<tool_calls>")
+	for _, call := range calls {
+		b.WriteString("<tool_call><tool_name>")
+		b.WriteString(call.Name)
+		b.WriteString("</tool_name><parameters>")
+		b.WriteString(compactJSON(cloneMap(call.Input)))
+		b.WriteString("</parameters></tool_call>")
+	}
+	b.WriteString("</tool_calls>")
+	return b.String()
+}
+
+// exampleArguments builds a placeholder argument object shaped by the schema,
+// so the model sees argument values rather than the schema structure.
+func exampleArguments(schema any) map[string]any {
+	out := map[string]any{}
+	schemaMap, _ := schema.(map[string]any)
+	props, _ := schemaMap["properties"].(map[string]any)
+	for key, prop := range props {
+		propSchema, _ := prop.(map[string]any)
+		out[key] = exampleValue(propSchema)
+	}
+	return out
+}
+
+func exampleValue(schema map[string]any) any {
+	if enumValues, ok := schema["enum"].([]any); ok && len(enumValues) > 0 {
+		return enumValues[0]
+	}
+	if constValue, ok := schema["const"]; ok {
+		return constValue
+	}
+	switch schemaTypeName(schema) {
+	case "integer", "number":
+		return 0
+	case "boolean":
+		return false
+	case "array":
+		return []any{}
+	case "object":
+		return exampleArguments(schema)
+	default:
+		return "..."
+	}
+}
+
+func schemaTypeName(schema map[string]any) string {
+	switch v := schema["type"].(type) {
+	case string:
+		return v
+	case []any:
+		for _, item := range v {
+			if name, ok := item.(string); ok && name != "null" {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 func ExtractToolMeta(tool map[string]any) (string, string, any) {

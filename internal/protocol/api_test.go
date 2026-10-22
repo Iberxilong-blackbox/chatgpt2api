@@ -1350,7 +1350,7 @@ func TestStreamTextResponseEventsPropagatesUpstreamError(t *testing.T) {
 	upstreamErr <- errors.New("upstream failed")
 	close(upstreamErr)
 
-	events, errCh := streamTextResponseEvents(context.Background(), "auto", deltas, upstreamErr)
+	events, errCh := streamTextResponseEvents(context.Background(), "auto", deltas, upstreamErr, responseTextOptions{})
 	var types []string
 	for event := range events {
 		if eventType, ok := event["type"].(string); ok {

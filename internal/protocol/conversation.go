@@ -24,6 +24,7 @@ import (
 	"chatgpt2api/internal/backend"
 	"chatgpt2api/internal/service"
 	"chatgpt2api/internal/storage"
+	tooladapter "chatgpt2api/internal/toolcall"
 	"chatgpt2api/internal/util"
 
 	"github.com/HugoSmits86/nativewebp"
@@ -50,6 +51,10 @@ type Engine struct {
 
 	responseContextMu sync.Mutex
 	ResponseContexts  *ResponseContextStore
+
+	modelCacheMu sync.Mutex
+	modelCache   map[string]struct{}
+	modelCacheAt time.Time
 }
 
 type ImageOutputSlotAcquirer func(context.Context, int) (func(), error)
@@ -1402,19 +1407,88 @@ func NormalizeMessages(messages any, system any) []map[string]any {
 	}
 	if list, ok := messages.([]map[string]any); ok {
 		for _, message := range list {
-			normalized = append(normalized, map[string]any{"role": firstNonEmpty(util.Clean(message["role"]), "user"), "content": MessageText(message["content"])})
+			normalized = append(normalized, normalizeMessage(message))
 		}
 		return normalized
 	}
 	if list, ok := messages.([]any); ok {
 		for _, raw := range list {
 			if message, ok := raw.(map[string]any); ok {
-				normalized = append(normalized, map[string]any{"role": firstNonEmpty(util.Clean(message["role"]), "user"), "content": MessageText(message["content"])})
+				normalized = append(normalized, normalizeMessage(message))
 			}
 		}
 	}
 	return normalized
 }
+
+// normalizeMessage flattens one OpenAI chat message into role + text. Assistant
+// tool calls are replayed in the prompt's XML format and tool results keep
+// their call id so multi-turn tool loops stay coherent upstream.
+func normalizeMessage(message map[string]any) map[string]any {
+	role := firstNonEmpty(util.Clean(message["role"]), "user")
+	content := MessageText(message["content"])
+	switch role {
+	case "assistant":
+		if xml := tooladapter.FormatCallsXML(assistantToolCalls(message)); xml != "" {
+			content = strings.TrimSpace(content + "\n" + xml)
+		}
+	case "tool", "function":
+		role = "tool"
+		// Stored contexts are re-normalized; keep already rendered results as-is.
+		if !strings.HasPrefix(content, toolResultPrefix) {
+			content = ToolResultText(firstNonEmpty(util.Clean(message["tool_call_id"]), util.Clean(message["name"])), content)
+		}
+	}
+	return map[string]any{"role": role, "content": content}
+}
+
+func assistantToolCalls(message map[string]any) []tooladapter.ParsedCall {
+	var calls []tooladapter.ParsedCall
+	for _, item := range util.AsMapSlice(message["tool_calls"]) {
+		fn, _ := item["function"].(map[string]any)
+		if call, ok := parsedCallFromFunction(fn); ok {
+			calls = append(calls, call)
+		}
+	}
+	if fn, ok := message["function_call"].(map[string]any); ok {
+		if call, ok := parsedCallFromFunction(fn); ok {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
+func parsedCallFromFunction(fn map[string]any) (tooladapter.ParsedCall, bool) {
+	name := util.Clean(fn["name"])
+	if name == "" {
+		return tooladapter.ParsedCall{}, false
+	}
+	return tooladapter.ParsedCall{Name: name, Input: toolArgumentsMap(fn["arguments"])}, true
+}
+
+func toolArgumentsMap(arguments any) map[string]any {
+	switch v := arguments.(type) {
+	case map[string]any:
+		return v
+	case string:
+		var out map[string]any
+		if err := json.Unmarshal([]byte(v), &out); err == nil && out != nil {
+			return out
+		}
+	}
+	return map[string]any{}
+}
+
+// ToolResultText renders a tool result as a transcript line the tool prompt
+// refers to.
+func ToolResultText(callID, content string) string {
+	if callID == "" {
+		return toolResultPrefix + ": " + content
+	}
+	return toolResultPrefix + " " + callID + ": " + content
+}
+
+const toolResultPrefix = "Tool result"
 
 func TokenCountMessages(messages any, system any) []map[string]any {
 	var out []map[string]any

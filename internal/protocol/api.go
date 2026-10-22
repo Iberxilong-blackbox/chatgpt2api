@@ -329,53 +329,85 @@ func (e *Engine) streamVisionDeltasWithTokenRetry(ctx context.Context, firstClie
 }
 
 func (e *Engine) HandleChatCompletions(ctx context.Context, body map[string]any) (map[string]any, *StreamResult, error) {
+	if IsImageChatRequest(body) {
+		if util.ToBool(body["stream"]) {
+			items, errCh := e.ImageChatEvents(ctx, body)
+			return nil, &StreamResult{Items: items, Err: errCh, Kind: "openai"}, nil
+		}
+		return e.ImageChatResponse(ctx, body)
+	}
+	format, err := ChatResponseFormat(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := e.ValidateTextModel(ctx, util.Clean(body["model"])); err != nil {
+		return nil, nil, err
+	}
+	vision := HasVisionImages(body)
+	var model string
+	var messages []map[string]any
+	var images []UploadedImage
+	if vision {
+		model, messages, images, err = VisionChatParts(body)
+	} else {
+		model, messages, err = TextChatParts(body)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
 	if util.ToBool(body["stream"]) {
 		var items <-chan map[string]any
 		var errCh <-chan error
-		if IsImageChatRequest(body) {
-			items, errCh = e.ImageChatEvents(ctx, body)
-		} else if HasVisionImages(body) {
-			model, messages, images, err := VisionChatParts(body)
-			if err != nil {
-				return nil, nil, err
-			}
+		if vision {
 			items, errCh = e.StreamVisionChatCompletionWithTools(ctx, e.TextBackend(e.Accounts.GetTextAccessToken()), messages, model, images, body["tools"], body["tool_choice"])
 		} else {
-			model, messages, err := TextChatParts(body)
-			if err != nil {
-				return nil, nil, err
-			}
 			items, errCh = e.StreamTextChatCompletionWithTools(ctx, e.TextBackend(e.Accounts.GetTextAccessToken()), messages, model, body["tools"], body["tool_choice"])
 		}
+		streamOptions, _ := body["stream_options"].(map[string]any)
+		items, errCh = wrapChatStream(ctx, model, items, errCh, chatOutputOptions{
+			Format:       format,
+			IncludeUsage: util.ToBool(streamOptions["include_usage"]),
+			PromptTokens: CountMessageTokens(messages, model),
+		})
 		return nil, &StreamResult{Items: items, Err: errCh, Kind: "openai"}, nil
 	}
-	if IsImageChatRequest(body) {
-		return e.ImageChatResponse(ctx, body)
-	}
-	if HasVisionImages(body) {
-		model, messages, images, err := VisionChatParts(body)
+	var result map[string]any
+	if vision {
+		result, err = e.VisionChatResponse(ctx, body, model, messages, images)
+	} else {
+		var text string
+		text, err = e.collectTextWithTokenRetry(ctx, ConversationRequest{Model: model, Messages: messages})
 		if err != nil {
 			return nil, nil, err
 		}
-		result, err := e.VisionChatResponse(ctx, body, model, messages, images)
-		if err != nil {
-			return nil, nil, err
-		}
-		return result, nil, nil
+		result, err = CompletionResponseWithTools(model, text, 0, messages, body["tools"], body["tool_choice"])
 	}
-	model, messages, err := TextChatParts(body)
 	if err != nil {
 		return nil, nil, err
 	}
-	text, err := e.collectTextWithTokenRetry(ctx, ConversationRequest{Model: model, Messages: messages})
-	if err != nil {
-		return nil, nil, err
-	}
-	result, err := CompletionResponseWithTools(model, text, 0, messages, body["tools"], body["tool_choice"])
-	if err != nil {
+	if err := applyCompletionFormat(result, format); err != nil {
 		return nil, nil, err
 	}
 	return result, nil, nil
+}
+
+// applyCompletionFormat validates and rewrites the final text content of a
+// non-stream completion; tool-call responses are left untouched.
+func applyCompletionFormat(result map[string]any, format *ResponseFormat) error {
+	if format == nil {
+		return nil
+	}
+	choice := result["choices"].([]map[string]any)[0]
+	if choice["finish_reason"] != "stop" {
+		return nil
+	}
+	message := choice["message"].(map[string]any)
+	text, err := format.Apply(util.Clean(message["content"]))
+	if err != nil {
+		return err
+	}
+	message["content"] = text
+	return nil
 }
 
 func CompletionChunk(model string, delta map[string]any, finishReason any, completionID string, created int64) map[string]any {
@@ -400,7 +432,7 @@ func CompletionResponse(model, content string, created int64, messages []map[str
 	return map[string]any{
 		"id": "chatcmpl-" + util.NewHex(32), "object": "chat.completion", "created": created, "model": model,
 		"choices": []map[string]any{{"index": 0, "message": map[string]any{"role": "assistant", "content": content}, "finish_reason": "stop"}},
-		"usage":   map[string]any{"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "total_tokens": promptTokens + completionTokens},
+		"usage":   UsageMap(promptTokens, completionTokens),
 	}
 }
 
@@ -636,7 +668,8 @@ func (e *Engine) VisionChatResponse(ctx context.Context, body map[string]any, mo
 	if err != nil {
 		return nil, err
 	}
-	usageMessages := TokenCountMessages(util.AsMapSlice(body["messages"]), ChatToolPrompt(body))
+	format, _ := ChatResponseFormat(body)
+	usageMessages := TokenCountMessages(util.AsMapSlice(body["messages"]), ChatInstructions(body, format))
 	if len(usageMessages) == 0 {
 		usageMessages = messages
 	}
@@ -663,7 +696,11 @@ func TextChatParts(body map[string]any) (string, []map[string]any, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	return model, NormalizeMessages(messages, ChatToolPrompt(body)), nil
+	format, err := ChatResponseFormat(body)
+	if err != nil {
+		return "", nil, err
+	}
+	return model, NormalizeMessages(messages, ChatInstructions(body, format)), nil
 }
 
 func IsImageChatRequest(body map[string]any) bool {
@@ -704,7 +741,11 @@ func VisionChatParts(body map[string]any) (string, []map[string]any, []UploadedI
 	if err != nil {
 		return "", nil, nil, err
 	}
-	messages := NormalizeMessages(rawMessages, ChatToolPrompt(body))
+	format, err := ChatResponseFormat(body)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	messages := NormalizeMessages(rawMessages, ChatInstructions(body, format))
 	images := ExtractVisionImages(body)
 	return model, messages, images, nil
 }
@@ -1016,7 +1057,15 @@ func (e *Engine) ResponseEventsScoped(ctx context.Context, body map[string]any, 
 	currentMessages := MessagesFromInput(body["input"], body["instructions"])
 	baseContext := MergeResponseContext(previous, currentMessages, nil)
 	if !HasResponseImageGenerationTool(body) {
-		events, errCh := e.StreamTextResponseWithMessages(ctx, responseModel, baseContext.Messages)
+		format, err := ResponsesTextFormat(body)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := e.ValidateTextModel(ctx, responseModel); err != nil {
+			return nil, nil, err
+		}
+		opts := responseTextOptions{Tools: ResponsesFunctionTools(body["tools"]), ToolChoice: body["tool_choice"], Format: format}
+		events, errCh := e.StreamTextResponseWithMessages(ctx, responseModel, baseContext.Messages, opts)
 		events = e.rememberResponseContextEventsScoped(scope, events, baseContext)
 		return events, errCh, nil
 	}
@@ -1111,67 +1160,13 @@ func responseImageGenerationModel(model string) string {
 	return util.ImageModelGPT
 }
 
-func (e *Engine) StreamTextResponse(ctx context.Context, body map[string]any) (<-chan map[string]any, <-chan error) {
-	model := firstNonEmpty(util.Clean(body["model"]), "auto")
-	messages := MessagesFromInput(body["input"], body["instructions"])
-	return e.StreamTextResponseWithMessages(ctx, model, messages)
-}
-
-func (e *Engine) StreamTextResponseWithMessages(ctx context.Context, model string, messages []map[string]any) (<-chan map[string]any, <-chan error) {
+func (e *Engine) StreamTextResponseWithMessages(ctx context.Context, model string, messages []map[string]any, opts responseTextOptions) (<-chan map[string]any, <-chan error) {
+	if instructions := ResponsesInstructions(opts); instructions != "" {
+		messages = append([]map[string]any{{"role": "system", "content": instructions}}, messages...)
+	}
+	opts.PromptTokens = CountMessageTokens(messages, model)
 	deltas, errCh := e.streamTextDeltasWithTokenRetry(ctx, e.TextBackend(e.Accounts.GetTextAccessToken()), ConversationRequest{Model: model, Messages: messages})
-	return streamTextResponseEvents(ctx, model, deltas, errCh)
-}
-
-func streamTextResponseEvents(ctx context.Context, model string, deltas <-chan string, upstreamErr <-chan error) (<-chan map[string]any, <-chan error) {
-	out := make(chan map[string]any)
-	errOut := make(chan error, 1)
-	go func() {
-		defer close(out)
-		defer close(errOut)
-		responseID := "resp_" + util.NewHex(32)
-		itemID := "msg_" + util.NewHex(32)
-		created := time.Now().Unix()
-		full := ""
-		send := func(item map[string]any) bool {
-			select {
-			case out <- item:
-				return true
-			case <-ctx.Done():
-				errOut <- ctx.Err()
-				return false
-			}
-		}
-		if !send(ResponseCreated(responseID, model, created)) {
-			return
-		}
-		if !send(map[string]any{"type": "response.output_item.added", "output_index": 0, "item": TextOutputItem("", itemID, "in_progress")}) {
-			return
-		}
-		for delta := range deltas {
-			full += delta
-			if !send(map[string]any{"type": "response.output_text.delta", "item_id": itemID, "output_index": 0, "content_index": 0, "delta": delta}) {
-				return
-			}
-		}
-		if upstreamErr != nil {
-			if err := <-upstreamErr; err != nil {
-				errOut <- err
-				return
-			}
-		}
-		if !send(map[string]any{"type": "response.output_text.done", "item_id": itemID, "output_index": 0, "content_index": 0, "text": full}) {
-			return
-		}
-		item := TextOutputItem(full, itemID, "completed")
-		if !send(map[string]any{"type": "response.output_item.done", "output_index": 0, "item": item}) {
-			return
-		}
-		if !send(ResponseCompleted(responseID, model, created, []map[string]any{item})) {
-			return
-		}
-		errOut <- nil
-	}()
-	return out, errOut
+	return streamTextResponseEvents(ctx, model, deltas, errCh, opts)
 }
 
 func combineErrorChannels(first, second <-chan error) <-chan error {
@@ -1370,7 +1365,7 @@ func responseInputMessages(input any) []map[string]any {
 	allTyped := len(list) > 0
 	for _, raw := range list {
 		item, ok := raw.(map[string]any)
-		allTyped = allTyped && ok && item["type"] != nil && item["role"] == nil
+		allTyped = allTyped && ok && item["type"] != nil && item["role"] == nil && !isResponseConversationItem(item)
 	}
 	if allTyped {
 		var parts []string
@@ -1397,8 +1392,32 @@ func responseInputMessages(input any) []map[string]any {
 	return messages
 }
 
+// isResponseConversationItem reports items that are turns of their own rather
+// than content parts of a single user message.
+func isResponseConversationItem(item map[string]any) bool {
+	switch util.Clean(item["type"]) {
+	case "message", "function_call", "function_call_output":
+		return true
+	}
+	return false
+}
+
 func responseMessageFromItem(item map[string]any) (map[string]any, bool) {
 	switch util.Clean(item["type"]) {
+	case "function_call":
+		name := util.Clean(item["name"])
+		if name == "" {
+			return nil, false
+		}
+		return map[string]any{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": util.Clean(item["call_id"]), "type": "function", "function": map[string]any{"name": name, "arguments": item["arguments"]}}}}, true
+	case "function_call_output":
+		output := item["output"]
+		if text, ok := output.(string); ok {
+			output = text
+		} else {
+			output = responseContentText(output)
+		}
+		return map[string]any{"role": "tool", "tool_call_id": util.Clean(item["call_id"]), "content": output}, true
 	case "input_text":
 		if text := strings.TrimSpace(util.Clean(item["text"])); text != "" {
 			return map[string]any{"role": "user", "content": text}, true
@@ -1556,10 +1575,14 @@ func preprocessBlock(block any) any {
 		copied["text"] = compactMessageText(util.Clean(item["text"]))
 		return copied
 	case "tool_use":
-		data, _ := json.Marshal(item["input"])
-		return map[string]any{"type": "text", "text": fmt.Sprintf("<tool_calls><tool_call><tool_name>%s</tool_name><parameters>%s</parameters></tool_call></tool_calls>", util.Clean(item["name"]), string(data))}
+		input, _ := item["input"].(map[string]any)
+		return map[string]any{"type": "text", "text": tooladapter.FormatCallsXML([]tooladapter.ParsedCall{{Name: util.Clean(item["name"]), Input: input}})}
 	case "tool_result":
-		return map[string]any{"type": "text", "text": fmt.Sprintf("Tool result %s: %s", util.Clean(item["tool_use_id"]), util.Clean(item["content"]))}
+		content := MessageText(item["content"])
+		if content == "" {
+			content = util.Clean(item["content"])
+		}
+		return map[string]any{"type": "text", "text": ToolResultText(util.Clean(item["tool_use_id"]), content)}
 	default:
 		return block
 	}

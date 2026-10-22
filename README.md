@@ -553,7 +553,7 @@ curl http://localhost:3000/v1/images/edits \
 
 ### `POST /v1/chat/completions`
 
-该接口面向图片场景，不是完整通用聊天代理。
+该接口支持图片场景与文本对话（含模拟的工具调用，见下文），不是完整通用聊天代理。
 
 ```bash
 curl http://localhost:3000/v1/chat/completions \
@@ -572,9 +572,18 @@ curl http://localhost:3000/v1/chat/completions \
   }'
 ```
 
+### 文本工具调用与结构化输出（模拟实现）
+
+上游 ChatGPT 网页没有原生 function calling / structured output，本服务通过"提示词注入 + 解析回复"模拟，稳定性不如官方 API：
+
+- `/v1/chat/completions`、`/v1/responses` 文本路径支持 function `tools` 与 `tool_choice`（`auto` / `none` / `required` / 指定函数），返回标准 `tool_calls` / `function_call` 输出项；多轮 `tool` / `function_call_output` 历史会带 call id 回放给模型。
+- `response_format`（Chat）与 `text.format`（Responses）支持 `json_object` 和 `json_schema`：服务会校验模型输出，不合法时返回 502 错误而不是静默放行；不支持的类型返回 400。
+- 文本模型名按 `/v1/models` 列表校验，未知模型返回 404。
+- `usage` 为本地估算值；上游不提供缓存命中信息，`prompt_tokens_details.cached_tokens` 恒为 0。流式请求可用 `stream_options.include_usage` 获取末尾 usage chunk。
+
 ### `POST /v1/responses`
 
-该接口面向图片生成工具调用场景，不是完整通用 Responses API 代理。
+该接口支持图片生成工具调用，以及上述文本 function tools；不是完整通用 Responses API 代理。
 
 ```bash
 curl http://localhost:3000/v1/responses \
